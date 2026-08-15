@@ -1,0 +1,39 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*' # Trigger only on semver tags like v0.1.0
+
+permissions:
+  contents: write
+  id-token: write # Use Cosign (Sigstore) for Keyless signing via OIDC
+
+jobs:
+  goreleaser:
+    name: Build & Release
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0 # Required by GoReleaser to generate the changelog properly
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: 'go.mod'
+        cache: true
+
+    # Install Cosign tool required by the 'signs' section in goreleaser.yaml
+    - name: Install Cosign
+      uses: sigstore/cosign-installer@v3.5.0
+
+    - name: Run GoReleaser
+      uses: goreleaser/goreleaser-action@v6 # MISE À JOUR v5 -> v6
+      with:
+        distribution: goreleaser
+        version: '~> v2'                    # CORRECTION: Force l'utilisation de GoReleaser v2
+        args: release --clean
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

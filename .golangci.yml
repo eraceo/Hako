@@ -1,0 +1,124 @@
+version: "2"
+
+run:
+  timeout: 10m
+  modules-download-mode: readonly
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/eraceo/Hako
+
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - dogsled
+    - err113
+    - errcheck
+    - gochecknoinits
+    - gocritic
+    - gocyclo
+    - gosec
+    - govet
+    - ineffassign
+    - lll
+    - misspell
+    - nakedret
+    - perfsprint
+    - revive
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+    - whitespace
+
+  settings:
+    gocyclo:
+      min-complexity: 30
+    misspell:
+      locale: US
+    lll:
+      line-length: 140
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - experimental
+        - opinionated
+        - performance
+        - style
+      disabled-checks:
+        - dupImport
+        - ifElseChain
+        - octalLiteral
+        - whyNoLint
+        - wrapperFunc
+        - hugeParam
+
+  exclusions:
+    rules:
+      - linters:
+          - err113
+        text: "do not define dynamic errors"
+        
+      - linters:
+          - perfsprint
+        text: "fmt.Errorf can be replaced with errors.New"
+        
+      - linters:
+          - perfsprint
+        text: "fmt.Sprintf can be replaced with string concatenation"
+
+      - path: internal/cli/
+        linters:
+          - lll
+      - path: internal/storage/vault.go
+        linters:
+          - lll
+
+      - path: _test\.go
+        linters:
+          - lll
+          - err113
+          - gocritic
+          - gosec 
+          - errcheck
+          
+      - path: cmd/
+        linters:
+          - gochecknoinits
+      - path: internal/cli/
+        linters:
+          - gochecknoinits
+
+      # Custom excludes from v1 issues.exclude
+      - linters:
+          - revive
+        text: "should have a package comment"
+      - linters:
+          - revive
+        text: "don't use an underscore in package name"
+      - linters:
+          - revive
+        text: "exported: type name will be used as"
+      - linters:
+          - revive
+        text: "exported: exported (.+) should have comment"
+
+      # Specific rule exclusions to bypass minor style lints
+      - linters:
+          - revive
+        text: "unused-parameter:"
+      - linters:
+          - gocritic
+        text: "elseif:"
+      - linters:
+          - gocritic
+        text: "paramTypeCombine:"
+      - linters:
+          - gocritic
+        text: "unnamedResult:"

@@ -1,0 +1,84 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+.out/
+coverage.txt
+coverage.html
+coverage.out
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Build artifacts & GoReleaser
+build/
+bin/
+dist/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Hako & Security files (NEVER COMMIT)
+config.yaml
+*.key
+*.pem
+*.crt
+*.p12
+*.hako
+vault.bin
+keyfile
+
+# Log files
+*.log
+logs/
+
+# Temporary files & Air live reload
+tmp/
+temp/
+*.tmp
+.gotmp/
+
+# Profiling data
+*.prof
+
+# Local environment files
+.env
+.env.local
+.env.*.local
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Backup and Archive files
+*.bak
+*.backup
+*.tar.gz
+*.zip
+*.rar
+
+# Documentation build
+docs/_build/

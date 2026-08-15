@@ -1,0 +1,99 @@
+version: 2
+project_name: hako
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./... -v # Fails the build if tests don't pass
+
+builds:
+  - id: hako
+    main: ./cmd/hako
+    binary: hako
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64 
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/eraceo/Hako/internal/version.Version={{.Version}}
+      - -X github.com/eraceo/Hako/internal/version.Commit={{.Commit}}
+      - -X github.com/eraceo/Hako/internal/version.Date={{.Date}}
+
+archives:
+  - id: default
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+      - config.example.yaml
+
+nfpms:
+  - id: packages
+    package_name: hako
+    vendor: Hako
+    homepage: https://github.com/eraceo/Hako
+    maintainer: erace
+    description: Secure, minimalist, local-first CLI password manager
+    license: MIT
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/bin
+    contents:
+      - src: config.example.yaml
+        dst: /usr/share/doc/hako/config.example.yaml
+      - src: README.md
+        dst: /usr/share/doc/hako/README.md
+
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+
+release:
+  github:
+    owner: eraceo
+    name: Hako
+  draft: false
+  prerelease: auto
+  replace_existing_artifacts: true
+
+signs:
+  - cmd: cosign
+    env:
+      - COSIGN_EXPERIMENTAL=1
+    certificate: '${artifact}.pem'
+    args:
+      - sign-blob
+      - '--output-certificate=${certificate}'
+      - '--output-signature=${signature}'
+      - '${artifact}'
+      - '--yes' 
+    artifacts: checksum 

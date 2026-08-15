@@ -1,0 +1,48 @@
+# Hako Configuration Example
+
+# Path to the encrypted vault file.
+# Defaults:
+# - Linux: ~/.local/share/hako/vault.bin
+# - macOS: ~/Library/Application Support/hako/vault.bin
+# - Windows: %LOCALAPPDATA%\hako\vault.bin
+vault_path: "~/.local/share/hako/vault.bin"
+
+# Path to the keyfile (optional, for extra security).
+# To disable the keyfile, set this to "none" or leave it empty.
+keyfile_path: "~/.local/share/hako/keyfile"
+
+# Path to the security audit log.
+# Records all access attempts, modifications, and security events.
+# Defaults to the same directory as the vault.
+audit_log_path: "~/.local/share/hako/audit.log"
+
+# Security Audit Log Rotation & Integrity Settings
+audit_max_size_mb: 10          # Max size in MB before log rotation
+audit_max_backups: 5           # Max number of rotated backup log files to retain
+audit_compress: true           # Compress rotated log files using gzip
+audit_enable_hash_chain: true  # Enable cryptographic hash chain for tamper evidence
+
+# Logging level (debug, info, warn, error)
+# Note: 'debug' level never logs sensitive data (passwords/keys),
+# but may log file paths and non-sensitive metadata.
+log_level: "info"
+
+# Argon2id Key Derivation Parameters
+# These settings control how hard it is to brute-force the master password.
+# Higher values increase security but take longer to unlock (0.5s - 1s recommended).
+# WARN: Do not change these unless you know what you are doing.
+argon2:
+  memory_kib: 65536    # 64 MiB
+  iterations: 4
+  parallelism: 4
+
+# Clipboard Security Settings
+clipboard:
+  # List of clipboard tools to try, in order of preference.
+  # Linux: ["wl-copy", "xclip", "xsel"]
+  # macOS: ["pbcopy"]
+  # Windows: ["clip"]
+  tool_preference: ["wl-copy", "xclip", "xsel"]
+  
+  # Time in seconds before clearing the clipboard automatically.
+  timeout: 15
