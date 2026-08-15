@@ -134,7 +134,7 @@ jobs:
         ./build/hako --help
 
     - name: Upload build artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: hako-linux-amd64
         path: build/hako
