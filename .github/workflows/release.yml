@@ -15,19 +15,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         fetch-depth: 0 # Required by GoReleaser to generate the changelog properly
 
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v7
       with:
         go-version-file: 'go.mod'
         cache: true
 
     # Install Cosign tool required by the 'signs' section in goreleaser.yaml
     - name: Install Cosign
-      uses: sigstore/cosign-installer@v3.5.0
+      uses: sigstore/cosign-installer@v4.1.2
 
     - name: Run GoReleaser
       uses: goreleaser/goreleaser-action@v6 # MISE À JOUR v5 -> v6
