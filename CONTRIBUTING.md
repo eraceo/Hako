@@ -26,125 +26,22 @@ make build
 make test
 ```
 
-## Project Architecture
+### Branch Protection & Repository Rules
 
-Familiarize yourself with the repository structure before contributing:
+The `main` branch is strictly protected by GitHub Rulesets. All contributions must comply with the following automated requirements:
 
-```text
-.
-├── .github/
-│   ├── assets/
-│   │   └── Hako.png            # Project logo
-│   ├── ISSUE_TEMPLATE/
-│   │   ├── bug_report.md       # Bug report template
-│   │   └── feature_request.md  # Feature request template
-│   └── workflows/
-│       ├── ci.yml              # CI Pipeline (Tests, Linting)
-│       └── release.yml         # Release pipeline (Goreleaser)
-├── cmd/
-│   └── hako/
-│       └── main.go             # Entry point: Cobra initialization and execution
-├── internal/                   # Private application code
-│   ├── audit/
-│   │   ├── logger.go           # Structured logging of security events
-│   │   ├── logger_test.go      # Tests for the logger
-│   │   ├── scanner.go          # Vault security audit (weak/duplicated passwords)
-│   │   └── scanner_test.go     # Tests for the scanner
-│   ├── cli/                    # CLI commands (Cobra)
-│   │   ├── add.go              # 'add' command: Add an entry
-│   │   ├── add_test.go         # Tests for the add command
-│   │   ├── audit.go            # 'audit' command: Run a security audit
-│   │   ├── audit_test.go       # Tests for the audit command
-│   │   ├── completion.go       # 'completion' command: Generate shell autocompletion
-│   │   ├── completion_test.go  # Tests for the completion command
-│   │   ├── edit.go             # 'edit' command: Edit an entry
-│   │   ├── edit_test.go        # Tests for the edit command
-│   │   ├── export.go           # 'export' command: Export the vault (JSON/CSV)
-│   │   ├── export_test.go      # Tests for the export command
-│   │   ├── generate.go         # 'generate' command: Generate a strong password
-│   │   ├── generate_test.go    # Tests for the generate command
-│   │   ├── get.go              # 'get' command: Retrieve and decrypt an entry
-│   │   ├── get_test.go         # Tests for the get command
-│   │   ├── import.go           # 'import' command: Import data
-│   │   ├── import_test.go      # Tests for the import command
-│   │   ├── init.go             # 'init' command: Initialize a new vault
-│   │   ├── init_test.go        # Tests for the init command
-│   │   ├── list.go             # 'list' command: List entries
-│   │   ├── list_test.go        # Tests for the list command
-│   │   ├── passwd.go           # 'passwd' command: Change the master password
-│   │   ├── passwd_test.go      # Tests for the passwd command
-│   │   ├── printer.go          # Helpers for formatted output (Tables, JSON)
-│   │   ├── printer_test.go     # Tests for printer helpers
-│   │   ├── remove.go           # 'remove' command: Remove an entry
-│   │   ├── remove_test.go      # Tests for the remove command
-│   │   ├── root.go             # Root command and global flags
-│   │   ├── root_test.go        # Tests for root configuration and flags
-│   │   ├── search.go           # 'search' command: Search in the vault
-│   │   ├── search_test.go      # Tests for the search command
-│   │   ├── test_helpers.go     # Shared testing utilities (I/O Mocks, Vault setup)
-│   │   ├── version.go          # 'version' command: Show the version
-│   ├── clipboard/
-│   │   ├── clipboard.go        # Secure clipboard management (copy + auto-clear)
-│   │   └── clipboard_test.go   # Tests for the clipboard
-│   ├── config/
-│   │   ├── config.go           # Configuration loading (Viper)
-│   │   └── config_test.go      # Configuration tests
-│   ├── crypto/
-│   │   ├── crypto.go           # Crypto primitives (AES-GCM, Argon2id, HKDF)
-│   │   └── crypto_test.go      # Crypto tests and test vectors
-│   ├── encoding/
-│   │   └── tlv/
-│   │       ├── tlv.go          # TLV (Tag-Length-Value) Encoding/Decoding
-│   │       └── tlv_test.go     # Tests for the TLV encoding
-│   ├── entropy/
-│   │   ├── entropy.go          # Password entropy calculation (simplistic Zxcvbn-like)
-│   │   └── entropy_test.go     # Entropy tests
-│   ├── memory/
-│   │   ├── secure.go           # Memguard wrapper for secure memory (SecureString)
-│   │   └── secure_test.go      # Memory management tests
-│   ├── secrets/
-│   │   ├── entry.go            # 'Entry' data model (Password entry)
-│   │   ├── entry_test.go       # Tests for the Entry model
-│   │   ├── generator.go        # Password generation logic
-│   │   └── generator_test.go   # Tests for the generator
-│   ├── storage/
-│   │   ├── vault.go            # Vault file management (Atomic Read/Write)
-│   │   ├── vault_test.go       # Storage tests
-│   │   ├── vault_unix.go       # File locking (Flock) for Unix
-│   │   ├── vault_windows.go    # File locking for Windows
-│   │   └── vault_windows_test.go # Windows-specific tests
-│   ├── ui/
-│   │   ├── prompt.go           # Interactive prompts (Masked password input)
-│   │   ├── prompt_test.go      # UI tests
-│   │   ├── sanitize.go         # String sanitization for terminal display
-│   │   └── sanitize_test.go    # Sanitization tests
-│   ├── validation/
-│   │   ├── validator.go        # User input validation (business rules)
-│   │   └── validator_test.go   # Validation tests
-│   └── version/
-│       ├── version.go          # Version constants and build metadata
-│       └── version_test.go     # Version tests
-├── scripts/
-│   ├── e2e_test.ps1            # End-to-end tests (PowerShell)
-│   ├── e2e_test.sh             # End-to-end tests (Bash)
-│   ├── install.ps1             # Installation script (Windows)
-│   └── install.sh              # Installation script (Unix)
-├── test/
-│   ├── benchmark_test.go       # Benchmark tests
-│   └── integration_test.go     # Global integration tests
-├── .gitignore                  # Files ignored by Git
-├── .golangci.yml               # Linter configuration (golangci-lint)
-├── .goreleaser.yaml            # Build and release configuration
-├── config.example.yaml         # Example configuration file
-├── CONTRIBUTING.md             # Contributing guide
-├── go.mod                      # Go module definition and dependencies
-├── go.sum                      # Dependency checksums
-├── LICENSE                     # Project license
-├── Makefile                    # Build commands (Make)
-├── QUICKSTART.md               # Quickstart guide
-├── README.md                   # Main documentation
-└── ROADMAP.md                  # Project roadmap
-```
+1. **Pull Requests Required**: Direct pushes to `main` are prohibited. All changes must be submitted via Pull Requests from a topic branch or fork.
+2. **Automated CI Status Checks (Strict)**: A PR can only be merged when all 7 pipeline checks succeed against the latest `main`:
+   - `Test (ubuntu-latest)`: Linux unit & integration tests with race detector.
+   - `Test (windows-latest)`: Windows-specific filesystem and locking tests.
+   - `Test (macos-latest)`: macOS build and integration tests.
+   - `Lint`: Code style and static analysis via `golangci-lint`.
+   - `Security Scan`: Automated vulnerability scanning with `gosec` and `govulncheck`.
+   - `Memory Allocation Check`: Zero-allocation and memory safety benchmarks.
+   - `Build Verification`: Static binary compilation validation.
+3. **Signed Commits**: All commits must be cryptographically signed (GPG, SSH, or GitHub Web verified).
+4. **Linear Git History**: Only clean, linear history is accepted (`Squash and merge` or `Rebase and merge`). Merge commits are rejected.
+5. **Conversation Resolution**: All review comments and discussions must be resolved prior to merging.
 
 ## Testing and Quality
 
@@ -173,7 +70,7 @@ make security-check
 
 - **Test Coverage**: A minimum of 80% coverage is required for all critical modules.
 - **Linting**: Code must pass `golangci-lint` with zero errors or warnings.
-- **Security**: Code must pass `gosec` with zero identified vulnerabilities.
+- **Security**: Code must pass `gosec` and `govulncheck` with zero identified vulnerabilities.
 - **Documentation**: All public functions, structs, and interfaces must be documented using standard GoDoc format.
 
 ## Security Considerations
@@ -186,7 +83,8 @@ Modifications to the following modules require rigorous scrutiny and extended pe
 - `internal/crypto/`: Cryptographic primitives and implementations.
 - `internal/storage/`: Encrypted file IO and atomic operations.
 - `internal/memory/`: Memory protection and allocation.
-- `pkg/ui/`: Handling of raw user inputs and terminal output.
+- `internal/audit/`: Structured audit logging and integrity hash chains.
+- `internal/ui/`: Handling of raw user inputs and terminal output.
 
 ### Security Rules
 
