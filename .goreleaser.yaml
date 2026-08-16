@@ -87,10 +87,11 @@ release:
 
 signs:
   - cmd: cosign
-    certificate: '${artifact}.bundle'
+    signature: '${artifact}.bundle'
+    certificate: ''
     args:
       - sign-blob
-      - '--bundle=${certificate}'
+      - '--bundle=${signature}'
       - '${artifact}'
       - '--yes'
     artifacts: checksum 
