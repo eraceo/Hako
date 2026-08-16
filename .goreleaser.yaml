@@ -87,13 +87,10 @@ release:
 
 signs:
   - cmd: cosign
-    env:
-      - COSIGN_EXPERIMENTAL=1
-    certificate: '${artifact}.pem'
+    certificate: '${artifact}.bundle'
     args:
       - sign-blob
-      - '--output-certificate=${certificate}'
-      - '--output-signature=${signature}'
+      - '--bundle=${certificate}'
       - '${artifact}'
-      - '--yes' 
+      - '--yes'
     artifacts: checksum 
