@@ -30,3 +30,7 @@ updates:
       - "actions"
     commit-message:
       prefix: "chore"
+    groups:
+      actions-dependencies:
+        patterns:
+          - "*"
