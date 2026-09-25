@@ -118,6 +118,10 @@ func (s EphemeralSecret) PlaintextLen() int {
 		return 0
 	}
 	aead := getEphemeralAEAD()
+	minSize := aead.NonceSize() + aead.Overhead()
+	if len(s) < minSize {
+		return 0
+	}
 	return len(s) - aead.NonceSize() - aead.Overhead()
 }
 
@@ -128,7 +132,8 @@ func (s EphemeralSecret) Access(cb func(plaintext []byte) error) error {
 		return cb(nil)
 	}
 	aead := getEphemeralAEAD()
-	if len(s) < aead.NonceSize() {
+	minSize := aead.NonceSize() + aead.Overhead()
+	if len(s) < minSize {
 		return ErrCorruptedSecret
 	}
 
