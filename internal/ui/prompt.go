@@ -31,12 +31,16 @@ var (
 	ErrPasswordEmpty = errors.New("password cannot be empty")
 )
 
-// readUnbufferedLine reads a line from stdin byte by byte without buffering
+// ReadUnbufferedLine reads a line from stdin byte by byte without buffering
 // to avoid consuming more input than necessary when piping commands.
 // Returns an exact-sized byte slice.
 //
 // SECURITY CRITICAL: The caller is STRICTLY responsible for wiping the returned
 // slice using memory.SecureZero() immediately after use.
+func ReadUnbufferedLine() ([]byte, error) {
+	return readUnbufferedLine()
+}
+
 func readUnbufferedLine() ([]byte, error) {
 	const maxBufferSize = 4096
 	// Temporary buffer to hold the incoming bytes
