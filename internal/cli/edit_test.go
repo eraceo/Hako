@@ -101,6 +101,38 @@ func getEditCmdTestCases(testMasterPass string) []editTestCase {
 				require.NoError(t, accessErr)
 			},
 		},
+		{
+			name: "Clear optional fields with '-' interactively",
+			args: []string{"edit", "targetEntry"},
+			// Inputs: MasterPass -> Username (-) -> Password (blank) -> URL (-) -> Notes (-) -> Tags (-)
+			simulatedInput: testMasterPass + "\n-\n\n-\n-\n-\n",
+			expectedOutput: "Entry 'targetEntry' updated successfully",
+			verifyFunc: func(t *testing.T, v *secrets.Vault) {
+				entry := v.GetEntryByName("targetEntry")
+				require.NotNil(t, entry)
+
+				assert.Nil(t, entry.Username, "Username should be cleared to nil")
+				assert.Nil(t, entry.URL, "URL should be cleared to nil")
+				assert.Nil(t, entry.Notes, "Notes should be cleared to nil")
+				assert.Empty(t, entry.Tags, "Tags should be cleared to empty")
+			},
+		},
+		{
+			name:           "Edit entry with --generate and custom options",
+			args:           []string{"edit", "targetEntry", "--generate", "--length", "20", "--no-similar"},
+			simulatedInput: testMasterPass + "\n",
+			expectedOutput: "Entry 'targetEntry' updated successfully",
+			verifyFunc: func(t *testing.T, v *secrets.Vault) {
+				entry := v.GetEntryByName("targetEntry")
+				require.NotNil(t, entry)
+
+				accessErr := entry.Password.Access(func(b []byte) error {
+					assert.Equal(t, 20, len(b))
+					return nil
+				})
+				require.NoError(t, accessErr)
+			},
+		},
 	}
 }
 

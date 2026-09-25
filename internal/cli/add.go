@@ -26,16 +26,17 @@ var (
 
 // addOptions encapsulates all flag states.
 type addOptions struct {
-	Name        string
-	Username    string
-	URL         string
-	Notes       string
-	Tags        []string
-	Generate    bool
-	PassLength  int
-	Symbols     bool
-	Memorable   bool
-	Interactive bool
+	Name          string
+	Username      string
+	URL           string
+	Notes         string
+	Tags          []string
+	Generate      bool
+	PassLength    int
+	Symbols       bool
+	Memorable     bool
+	PasswordStdin bool
+	Interactive   bool
 }
 
 // NewAddCmd creates and returns the add command.
@@ -45,7 +46,8 @@ func NewAddCmd() *cobra.Command {
 		Short: "Add a new password entry",
 		Long: `Add a new password entry to the vault.
 You can provide the details via flags or be prompted interactively.
-Use --generate to automatically generate a secure password.`,
+Use --generate to automatically generate a secure password.
+Use --password-stdin to pipe a password from standard input.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runAdd,
 	}
@@ -55,9 +57,10 @@ Use --generate to automatically generate a secure password.`,
 	cmd.Flags().StringP("notes", "n", "", "notes for the entry")
 	cmd.Flags().StringSliceP("tags", "t", []string{}, "tags for the entry (comma-separated)")
 	cmd.Flags().BoolP("generate", "g", false, "generate a secure password")
-	cmd.Flags().Int("length", 16, "length of generated password")
+	cmd.Flags().IntP("length", "l", 16, "length of generated password")
 	cmd.Flags().Bool("symbols", true, "include symbols in generated password")
 	cmd.Flags().Bool("memorable", false, "generate memorable password")
+	cmd.Flags().Bool("password-stdin", false, "read entry password from stdin without prompt or confirmation")
 
 	return cmd
 }
@@ -153,24 +156,30 @@ func parseAddFlags(cmd *cobra.Command, args []string) (addOptions, error) {
 	if err != nil {
 		return addOptions{}, err
 	}
+	passwordStdin, err := cmd.Flags().GetBool("password-stdin")
+	if err != nil {
+		return addOptions{}, err
+	}
 
 	anyFlagChanged := cmd.Flags().Changed("user") ||
 		cmd.Flags().Changed("url") ||
 		cmd.Flags().Changed("notes") ||
 		cmd.Flags().Changed("tags") ||
-		cmd.Flags().Changed("generate")
+		cmd.Flags().Changed("generate") ||
+		cmd.Flags().Changed("password-stdin")
 
 	return addOptions{
-		Name:        args[0],
-		Username:    username,
-		URL:         url,
-		Notes:       notes,
-		Tags:        tags,
-		Generate:    generate,
-		PassLength:  length,
-		Symbols:     symbols,
-		Memorable:   memorable,
-		Interactive: !anyFlagChanged,
+		Name:          args[0],
+		Username:      username,
+		URL:           url,
+		Notes:         notes,
+		Tags:          tags,
+		Generate:      generate,
+		PassLength:    length,
+		Symbols:       symbols,
+		Memorable:     memorable,
+		PasswordStdin: passwordStdin,
+		Interactive:   !anyFlagChanged && !passwordStdin,
 	}, nil
 }
 
@@ -250,6 +259,17 @@ func getEntryDetails(cmd *cobra.Command, opts addOptions) (*secrets.Entry, error
 }
 
 func getEntryPassword(opts addOptions) ([]byte, error) {
+	if opts.PasswordStdin {
+		line, err := ui.ReadUnbufferedLine()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read password from stdin: %w", err)
+		}
+		if len(line) == 0 {
+			return nil, ui.ErrPasswordEmpty
+		}
+		return line, nil
+	}
+
 	if opts.Generate {
 		return generateEntryPassword(opts)
 	}

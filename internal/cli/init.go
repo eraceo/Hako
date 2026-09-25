@@ -45,6 +45,7 @@ Optionally, it can generate a keyfile for additional security.`,
 	}
 
 	cmd.Flags().Bool("gen-keyfile", false, "generate a keyfile for additional security")
+	cmd.Flags().Bool("generate-keyfile", false, "alias for --gen-keyfile")
 	cmd.Flags().Uint32("argon-memory", 65536, "Argon2 memory parameter in KiB (default: 64MB)")
 	cmd.Flags().Uint32("argon-iter", 3, "Argon2 iterations parameter")
 
@@ -53,11 +54,12 @@ Optionally, it can generate a keyfile for additional security.`,
 
 func runInit(cmd *cobra.Command, _ []string) error {
 	genKeyfile, _ := cmd.Flags().GetBool("gen-keyfile")
+	generateKeyfile, _ := cmd.Flags().GetBool("generate-keyfile")
 	argonMem, _ := cmd.Flags().GetUint32("argon-memory")
 	argonIter, _ := cmd.Flags().GetUint32("argon-iter")
 
 	opts := initOptions{
-		GenerateKeyfile: genKeyfile,
+		GenerateKeyfile: genKeyfile || generateKeyfile,
 		ArgonMemory:     argonMem,
 		ArgonIter:       argonIter,
 	}

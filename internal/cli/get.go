@@ -361,6 +361,9 @@ func copyToClipboard(entry *secrets.Entry, cfg *config.Config, opts getOptions) 
 	}
 
 	if err != nil {
+		if !clipManager.IsAvailable() {
+			return fmt.Errorf("failed to copy %s to clipboard: no clipboard tool available (please install wl-clipboard, xclip, or pbcopy)", contentType)
+		}
 		return fmt.Errorf("failed to copy %s to clipboard: %w", contentType, err)
 	}
 

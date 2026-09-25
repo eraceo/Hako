@@ -94,6 +94,33 @@ func getAddCmdTestCases(testMasterPass string) []addTestCase {
 			},
 		},
 		{
+			name: "Add entry via password-stdin",
+			args: []string{
+				"add",
+				"stdinEntry",
+				"--user", "ci-bot",
+				"--password-stdin",
+			},
+			// Inputs Flow:
+			// 1. Password on Stdin
+			// 2. Master Password for vault unlock
+			simulatedInput: "pipedSecretPass123!\n" + testMasterPass + "\n",
+			expectedOutput: "Entry 'stdinEntry' added successfully",
+			verifyFunc: func(t *testing.T, entry *secrets.Entry) {
+				accessErr := entry.Username.Access(func(b []byte) error {
+					assert.Equal(t, []byte("ci-bot"), b)
+					return nil
+				})
+				require.NoError(t, accessErr)
+
+				accessErr = entry.Password.Access(func(b []byte) error {
+					assert.Equal(t, []byte("pipedSecretPass123!"), b)
+					return nil
+				})
+				require.NoError(t, accessErr)
+			},
+		},
+		{
 			name: "Fails on duplicate entry name",
 			args: []string{"add", "existingEntry"},
 			// Inputs Flow:
