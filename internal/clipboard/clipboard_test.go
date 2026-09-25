@@ -154,6 +154,9 @@ func setupMockManager(tool string, lookPathErr error, runCmdErr error) (*Manager
 			calls = append(calls, mockCmdCall{Name: name, Args: args, Stdin: stdinCopy})
 			return nil
 		},
+		spawnDaemon: func(tool string, timeout time.Duration) error {
+			return errors.New("mock daemon spawn disabled in tests")
+		},
 	}
 	m.tool = m.detectTool()
 	return m, &calls
@@ -302,19 +305,45 @@ func TestDefaultRunCmd(t *testing.T) {
 }
 
 func TestCopySecureDaemon_Fallback(t *testing.T) {
-	// Setup a mock manager where write succeeds, but we simulate daemon spawn failure fallback
+	// Setup a mock manager where write succeeds, but daemon spawn fails
 	m, calls := setupMockManager("wl-copy", nil, nil)
+	m.spawnDaemon = func(tool string, timeout time.Duration) error {
+		return errors.New("simulated daemon spawn failure")
+	}
 
 	secret := []byte("daemon_fallback_secret")
 	// Copy buffer to check if fallback preserves it before being cleared
 	secretCopy := make([]byte, len(secret))
 	copy(secretCopy, secret)
 
-	// Since SpawnDaemon will fail (no binary named for test), CopySecureDaemon will fall back to CopySecureSilent
+	// Since SpawnDaemon will fail, CopySecureDaemon will fall back to CopySecureSilent
 	err := m.CopySecureDaemon(secret, 50*time.Millisecond)
 	assert.NoError(t, err)
 
 	// Verify that writeToClipboard was called with the actual secret bytes
 	require.NotEmpty(t, *calls)
 	assert.Equal(t, secretCopy, (*calls)[0].Stdin, "First write should contain the original secret payload")
+}
+
+func TestCopySecureDaemon_Success(t *testing.T) {
+	m, calls := setupMockManager("wl-copy", nil, nil)
+	spawnCalled := false
+	m.spawnDaemon = func(tool string, timeout time.Duration) error {
+		spawnCalled = true
+		return nil
+	}
+
+	secret := []byte("daemon_success_secret")
+	secretCopy := make([]byte, len(secret))
+	copy(secretCopy, secret)
+
+	err := m.CopySecureDaemon(secret, 50*time.Millisecond)
+	assert.NoError(t, err)
+	assert.True(t, spawnCalled)
+	require.NotEmpty(t, *calls)
+	assert.Equal(t, secretCopy, (*calls)[0].Stdin)
+
+	// Buffer must be securely zeroed on return
+	expectedZero := make([]byte, len(secretCopy))
+	assert.Equal(t, expectedZero, secret)
 }
