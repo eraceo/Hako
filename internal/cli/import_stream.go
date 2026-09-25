@@ -284,6 +284,9 @@ func (c *SecureCSVImporter) Parse() ([]*secrets.Entry, error) {
 	for i, field := range headerFields {
 		key := strings.ToLower(strings.TrimSpace(string(field)))
 		c.header[key] = i
+		if len(field) > 0 {
+			memory.SecureZero(field[:cap(field)])
+		}
 	}
 	c.arena.Reset()
 
@@ -302,6 +305,12 @@ func (c *SecureCSVImporter) Parse() ([]*secrets.Entry, error) {
 				entries = append(entries, entry)
 			}
 			idx++
+			// Clean up all field slices to prevent orphan columns from leaking onto heap
+			for _, f := range fields {
+				if len(f) > 0 {
+					memory.SecureZero(f[:cap(f)])
+				}
+			}
 			c.arena.Reset()
 		}
 
@@ -404,6 +413,7 @@ func (c *SecureCSVImporter) buildEntry(fields [][]byte, idx int) *secrets.Entry 
 	var name string
 	if len(nameBytes) > 0 {
 		name = string(nameBytes)
+		memory.SecureZero(nameBytes[:cap(nameBytes)])
 	} else {
 		name = fmt.Sprintf("Imported CSV Entry %d", idx+1)
 	}
@@ -418,6 +428,7 @@ func (c *SecureCSVImporter) buildEntry(fields [][]byte, idx int) *secrets.Entry 
 				tags = append(tags, t)
 			}
 		}
+		memory.SecureZero(tagBytes[:cap(tagBytes)])
 	}
 
 	entry, err := secrets.NewEntry(name, username, password, url, notes, tags)
@@ -493,6 +504,14 @@ func (k *SecureKeePassImporter) Parse() ([]*secrets.Entry, error) {
 func (k *SecureKeePassImporter) parseEntryBlock() (*secrets.Entry, error) {
 	// Collect heap copies of field values; arena will be reset after this call.
 	var name, username, password, url, notes []byte
+	defer func() {
+		// Clean up any unconsumed slices (e.g. if an error occurs before NewEntry)
+		memory.SecureZero(name)
+		memory.SecureZero(username)
+		memory.SecureZero(password)
+		memory.SecureZero(url)
+		memory.SecureZero(notes)
+	}()
 
 	for {
 		tag, isClose, selfClosing, err := k.nextTag()
@@ -527,7 +546,11 @@ func (k *SecureKeePassImporter) parseEntryBlock() (*secrets.Entry, error) {
 				url = val
 			case "Notes":
 				notes = val
+			default:
+				// Securely wipe unmapped sensitive attributes (PIN, security questions, custom tokens)
+				memory.SecureZero(val)
 			}
+			memory.SecureZero(key)
 		}
 	}
 
@@ -827,10 +850,13 @@ func (p *SecureJSONImporter) seekToItemsArray() error {
 			return err
 		}
 		if err := p.expect(':'); err != nil {
+			memory.SecureZero(key)
 			return err
 		}
 
-		if bytes.Equal(key, []byte("items")) {
+		isItems := bytes.Equal(key, []byte("items"))
+		memory.SecureZero(key)
+		if isItems {
 			return nil // reader is now positioned before the array value
 		}
 
@@ -847,6 +873,14 @@ func (p *SecureJSONImporter) parseEntryObject() (*secrets.Entry, error) {
 	}
 
 	var name, username, password, url, notes []byte
+	defer func() {
+		// Wipe unconsumed sensitive fields on parse failure
+		memory.SecureZero(name)
+		memory.SecureZero(username)
+		memory.SecureZero(password)
+		memory.SecureZero(url)
+		memory.SecureZero(notes)
+	}()
 
 	for {
 		next, err := p.reader.skipWhitespaceAndPeek()
@@ -867,6 +901,7 @@ func (p *SecureJSONImporter) parseEntryObject() (*secrets.Entry, error) {
 			return nil, err
 		}
 		if err := p.expect(':'); err != nil {
+			memory.SecureZero(key)
 			return nil, err
 		}
 
@@ -880,6 +915,7 @@ func (p *SecureJSONImporter) parseEntryObject() (*secrets.Entry, error) {
 		default:
 			err = p.skipValue()
 		}
+		memory.SecureZero(key)
 
 		if err != nil {
 			return nil, err
@@ -894,17 +930,24 @@ func (p *SecureJSONImporter) parseEntryObject() (*secrets.Entry, error) {
 	return secrets.NewEntry(entryName, username, password, url, notes, nil)
 }
 
-func (p *SecureJSONImporter) parseLoginObject() ([]byte, []byte, []byte, error) {
-	var username, password, url []byte
-
-	if err := p.expect('{'); err != nil {
+func (p *SecureJSONImporter) parseLoginObject() (username, password, url []byte, err error) {
+	if err = p.expect('{'); err != nil {
 		return nil, nil, nil, err
 	}
+
+	defer func() {
+		if err != nil {
+			memory.SecureZero(username)
+			memory.SecureZero(password)
+			memory.SecureZero(url)
+		}
+	}()
 
 	for {
 		next, errPeek := p.reader.skipWhitespaceAndPeek()
 		if errPeek != nil {
-			return nil, nil, nil, errPeek
+			err = errPeek
+			return nil, nil, nil, err
 		}
 		if next == '}' {
 			_, _ = p.reader.ReadByte()
@@ -917,9 +960,11 @@ func (p *SecureJSONImporter) parseLoginObject() ([]byte, []byte, []byte, error) 
 
 		key, errKey := p.parseString()
 		if errKey != nil {
-			return nil, nil, nil, errKey
+			err = errKey
+			return nil, nil, nil, err
 		}
-		if err := p.expect(':'); err != nil {
+		if err = p.expect(':'); err != nil {
+			memory.SecureZero(key)
 			return nil, nil, nil, err
 		}
 
@@ -934,9 +979,11 @@ func (p *SecureJSONImporter) parseLoginObject() ([]byte, []byte, []byte, error) 
 		default:
 			errVal = p.skipValue()
 		}
+		memory.SecureZero(key)
 
 		if errVal != nil {
-			return nil, nil, nil, errVal
+			err = errVal
+			return nil, nil, nil, err
 		}
 	}
 	return username, password, url, nil
@@ -980,6 +1027,7 @@ func (p *SecureJSONImporter) parseFirstURI() ([]byte, error) {
 			return nil, err
 		}
 		if err := p.expect(':'); err != nil {
+			memory.SecureZero(key)
 			return nil, err
 		}
 
@@ -988,6 +1036,7 @@ func (p *SecureJSONImporter) parseFirstURI() ([]byte, error) {
 		} else {
 			err = p.skipValue()
 		}
+		memory.SecureZero(key)
 		if err != nil {
 			return nil, err
 		}
