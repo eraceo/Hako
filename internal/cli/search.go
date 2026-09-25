@@ -71,7 +71,7 @@ func runSearch(cmd *cobra.Command, args []string) error {
 
 	// Use the centralized UI system for all output to ensure consistent formatting
 	// and correct behavior with any future --quiet or --no-color flags.
-	ui.PrintfSuccessf("Found %d entries:\n\n", len(results))
+	ui.Printf("Found %d entries:\n\n", len(results))
 	printEntriesTable(results)
 
 	return nil
