@@ -560,4 +560,3 @@ func TestSecureCSVImporter_UnmappedColumns(t *testing.T) {
 	assertSecret(t, entries[0].Username, "user1")
 	assertSecret(t, entries[0].Password, "pass1")
 }
-

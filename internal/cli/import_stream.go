@@ -931,7 +931,7 @@ func (p *SecureJSONImporter) parseEntryObject() (*secrets.Entry, error) {
 }
 
 func (p *SecureJSONImporter) parseLoginObject() (username, password, url []byte, err error) {
-	if err = p.expect('{'); err != nil {
+	if err := p.expect('{'); err != nil {
 		return nil, nil, nil, err
 	}
 
