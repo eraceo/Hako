@@ -128,15 +128,13 @@ func (m *Manager) CopySecureDaemon(text []byte, timeout time.Duration) error {
 		return err
 	}
 
-	// CRITICAL SECURITY STEP:
-	// Wipe the secret from Go memory IMMEDIATELY after successful handover to the OS.
-	memory.SecureZero(text)
-
 	// Try spawning background daemon. If daemon spawning fails, fall back to synchronous CopySecure behavior.
 	if err := SpawnDaemon(m.tool, timeout); err != nil {
 		return m.CopySecureSilent(text, timeout, true)
 	}
 
+	// Wipe only after confirming daemon has taken ownership
+	memory.SecureZero(text)
 	return nil
 }
 

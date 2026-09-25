@@ -146,7 +146,12 @@ func setupMockManager(tool string, lookPathErr error, runCmdErr error) (*Manager
 			if runCmdErr != nil {
 				return runCmdErr
 			}
-			calls = append(calls, mockCmdCall{Name: name, Args: args, Stdin: stdin})
+			var stdinCopy []byte
+			if stdin != nil {
+				stdinCopy = make([]byte, len(stdin))
+				copy(stdinCopy, stdin)
+			}
+			calls = append(calls, mockCmdCall{Name: name, Args: args, Stdin: stdinCopy})
 			return nil
 		},
 	}
@@ -294,4 +299,22 @@ func TestDefaultRunCmd(t *testing.T) {
 	}
 	err := m.runCmd(context.Background(), cmdName, args, nil)
 	assert.NoError(t, err)
+}
+
+func TestCopySecureDaemon_Fallback(t *testing.T) {
+	// Setup a mock manager where write succeeds, but we simulate daemon spawn failure fallback
+	m, calls := setupMockManager("wl-copy", nil, nil)
+
+	secret := []byte("daemon_fallback_secret")
+	// Copy buffer to check if fallback preserves it before being cleared
+	secretCopy := make([]byte, len(secret))
+	copy(secretCopy, secret)
+
+	// Since SpawnDaemon will fail (no binary named for test), CopySecureDaemon will fall back to CopySecureSilent
+	err := m.CopySecureDaemon(secret, 50*time.Millisecond)
+	assert.NoError(t, err)
+
+	// Verify that writeToClipboard was called with the actual secret bytes
+	require.NotEmpty(t, *calls)
+	assert.Equal(t, secretCopy, (*calls)[0].Stdin, "First write should contain the original secret payload")
 }
