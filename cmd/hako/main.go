@@ -1,4 +1,3 @@
-// Package main is the entry point for the Hako CLI.
 package main
 
 import (
@@ -8,7 +7,10 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/awnumar/memguard"
+
 	"github.com/eraceo/Hako/internal/cli"
+	"github.com/eraceo/Hako/internal/memory"
 )
 
 func main() {
@@ -20,9 +22,9 @@ func main() {
 }
 
 func run() int {
-	// Create a root context that listens for OS interrupt signals (Ctrl+C).
-	// On Windows, syscall.SIGTERM is compiled but never sent by the OS;
-	// os.Interrupt handles CTRL_C_EVENT correctly cross-platform.
+	_ = memory.DisableCoreDumps()
+	defer memguard.Purge()
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
