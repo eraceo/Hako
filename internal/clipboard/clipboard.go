@@ -53,10 +53,11 @@ var (
 
 // Manager handles clipboard operations.
 type Manager struct {
-	config   config.ClipboardConfig
-	tool     string
-	lookPath func(string) (string, error)
-	runCmd   func(ctx context.Context, name string, args []string, stdin []byte) error
+	config      config.ClipboardConfig
+	tool        string
+	lookPath    func(string) (string, error)
+	runCmd      func(ctx context.Context, name string, args []string, stdin []byte) error
+	spawnDaemon func(tool string, timeout time.Duration) error
 }
 
 // New creates a new clipboard manager.
@@ -70,6 +71,7 @@ func New(cfg config.ClipboardConfig) *Manager {
 			cmd.Stdin = bytes.NewReader(stdin)
 			return cmd.Run()
 		},
+		spawnDaemon: SpawnDaemon,
 	}
 	manager.tool = manager.detectTool()
 	return manager
@@ -128,15 +130,17 @@ func (m *Manager) CopySecureDaemon(text []byte, timeout time.Duration) error {
 		return err
 	}
 
-	// CRITICAL SECURITY STEP:
-	// Wipe the secret from Go memory IMMEDIATELY after successful handover to the OS.
-	memory.SecureZero(text)
-
 	// Try spawning background daemon. If daemon spawning fails, fall back to synchronous CopySecure behavior.
-	if err := SpawnDaemon(m.tool, timeout); err != nil {
+	spawn := m.spawnDaemon
+	if spawn == nil {
+		spawn = SpawnDaemon
+	}
+	if err := spawn(m.tool, timeout); err != nil {
 		return m.CopySecureSilent(text, timeout, true)
 	}
 
+	// Wipe only after confirming daemon has taken ownership
+	memory.SecureZero(text)
 	return nil
 }
 

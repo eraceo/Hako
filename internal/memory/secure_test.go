@@ -177,3 +177,8 @@ func TestSecureBuffer_ConcurrentAccess(t *testing.T) {
 	// Wait for all goroutines to finish. If there is a deadlock, the test will timeout.
 	wg.Wait()
 }
+
+func TestDisableCoreDumps(t *testing.T) {
+	err := DisableCoreDumps()
+	assert.NoError(t, err)
+}

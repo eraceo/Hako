@@ -471,6 +471,50 @@ func TestSecureKeePassImporter(t *testing.T) {
 				assertSecret(t, e.Password, "pass123456")
 			},
 		},
+		{
+			name: "Unmapped Custom Attributes (PIN, SecurityQuestion, Token)",
+			xmlContent: `<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<KeePassFile>
+	<Root>
+		<Group>
+			<Entry>
+				<String>
+					<Key>Title</Key>
+					<Value>Banking Account</Value>
+				</String>
+				<String>
+					<Key>UserName</Key>
+					<Value>bankuser</Value>
+				</String>
+				<String>
+					<Key>Password</Key>
+					<Value>supersecretbankpass</Value>
+				</String>
+				<String>
+					<Key>PIN</Key>
+					<Value>1234</Value>
+				</String>
+				<String>
+					<Key>SecurityQuestion</Key>
+					<Value>Mother's maiden name</Value>
+				</String>
+				<String>
+					<Key>API_Token</Key>
+					<Value>secret_api_token_xyz</Value>
+				</String>
+			</Entry>
+		</Group>
+	</Root>
+</KeePassFile>`,
+			expectEntries: 1,
+			verify: func(t *testing.T, entries []*secrets.Entry) {
+				require.Len(t, entries, 1)
+				e := entries[0]
+				assert.Equal(t, "Banking Account", e.Name)
+				assertSecret(t, e.Username, "bankuser")
+				assertSecret(t, e.Password, "supersecretbankpass")
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -495,4 +539,24 @@ func TestSecureKeePassImporter(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSecureCSVImporter_UnmappedColumns(t *testing.T) {
+	tempDir := t.TempDir()
+
+	csvData := "name,username,password,credit_card,pin,extra_secret\nTestService,user1,pass1,4111222233334444,9876,topsecretvalue\n"
+	filePath := filepath.Join(tempDir, "unmapped.csv")
+	err := os.WriteFile(filePath, []byte(csvData), 0600)
+	require.NoError(t, err)
+
+	importer, err := NewSecureCSVImporter(filePath)
+	require.NoError(t, err)
+	defer importer.Close()
+
+	entries, err := importer.Parse()
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "TestService", entries[0].Name)
+	assertSecret(t, entries[0].Username, "user1")
+	assertSecret(t, entries[0].Password, "pass1")
 }

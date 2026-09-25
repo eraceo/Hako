@@ -304,3 +304,32 @@ func TestVault_Zero(t *testing.T) {
 	assert.Empty(t, e1.Password)
 	assert.Empty(t, e2.Password)
 }
+
+func TestEphemeralSecret_CorruptedBounds(t *testing.T) {
+	t.Parallel()
+
+	// Truncated/corrupted slices below minimum AES-GCM size (12 nonce + 16 overhead = 28 bytes)
+	testSizes := []int{0, 1, 5, 11, 12, 13, 20, 27}
+
+	for _, size := range testSizes {
+		corrupted := EphemeralSecret(make([]byte, size))
+
+		// PlaintextLen must safely return 0 without underflow
+		assert.Equal(t, 0, corrupted.PlaintextLen(), "Size %d should return PlaintextLen 0", size)
+
+		// Access must safely return ErrCorruptedSecret (or cb(nil) for size 0) without panicking
+		if size == 0 {
+			err := corrupted.Access(func(plaintext []byte) error {
+				assert.Nil(t, plaintext)
+				return nil
+			})
+			assert.NoError(t, err)
+		} else {
+			err := corrupted.Access(func(plaintext []byte) error {
+				t.Fatalf("Callback should not be invoked for corrupted secret of size %d", size)
+				return nil
+			})
+			assert.ErrorIs(t, err, ErrCorruptedSecret, "Size %d should return ErrCorruptedSecret", size)
+		}
+	}
+}

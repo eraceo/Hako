@@ -9,7 +9,10 @@ import (
 	"syscall"
 	"time"
 	"unicode/utf16"
+	"unicode/utf8"
 	"unsafe"
+
+	"github.com/eraceo/Hako/internal/memory"
 )
 
 const (
@@ -54,9 +57,11 @@ func openClipboardWithRetry() error {
 }
 
 func wipeUint16(buf []uint16) {
-	for i := range buf {
-		buf[i] = 0
+	if len(buf) == 0 {
+		return
 	}
+	byteSlice := unsafe.Slice((*byte)(unsafe.Pointer(&buf[0])), len(buf)*2)
+	memory.SecureZero(byteSlice)
 }
 
 func getFormatID(formatName string) (uint32, error) {
@@ -72,9 +77,24 @@ func getFormatID(formatName string) (uint32, error) {
 }
 
 func setClipboardText(text []byte) error {
-	u16 := utf16.Encode([]rune(string(text)))
-	u16WithNull := append(u16, 0)
-	defer wipeUint16(u16WithNull)
+	// Preallocate capacity: each UTF-8 rune occupies >= 1 byte and produces <= 2 UTF-16 units.
+	// Capacity len(text) + 1 is guaranteed to avoid slice reallocations.
+	u16Buf := make([]uint16, 0, len(text)+1)
+	defer func() {
+		wipeUint16(u16Buf[:cap(u16Buf)])
+	}()
+
+	for i := 0; i < len(text); {
+		r, size := utf8.DecodeRune(text[i:])
+		i += size
+		if r >= 0x10000 && r <= 0x10FFFF {
+			r1, r2 := utf16.EncodeRune(r)
+			u16Buf = append(u16Buf, uint16(r1), uint16(r2))
+		} else {
+			u16Buf = append(u16Buf, uint16(r))
+		}
+	}
+	u16WithNull := append(u16Buf, 0)
 
 	bytesCount := uintptr(len(u16WithNull) * 2)
 
