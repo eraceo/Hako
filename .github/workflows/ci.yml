@@ -28,6 +28,7 @@ jobs:
       uses: actions/setup-go@v7
       with:
         go-version-file: 'go.mod'
+        check-latest: true
         cache: true 
 
     - name: Download dependencies
@@ -70,6 +71,7 @@ jobs:
       uses: actions/setup-go@v7
       with:
         go-version-file: 'go.mod'
+        check-latest: true
         cache: false 
 
     - name: golangci-lint
@@ -89,6 +91,7 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
+          check-latest: true
           cache: true 
 
       - name: Run Gosec Security Scanner
@@ -111,6 +114,7 @@ jobs:
       uses: actions/setup-go@v7
       with:
         go-version-file: 'go.mod'
+        check-latest: true
     - name: Run Benchmarks (Check Zero-Allocations)
       run: go test -bench . -benchmem ./internal/crypto/... ./internal/memory/...
 
@@ -126,6 +130,7 @@ jobs:
       uses: actions/setup-go@v7
       with:
         go-version-file: 'go.mod'
+        check-latest: true
         cache: true
 
     - name: Build Binary
