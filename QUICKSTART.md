@@ -17,8 +17,8 @@ sudo make install
 You'll be prompted for a master password. 
 
 ```bash
-hako init           # Standard setup
-hako init --keyfile # Recommended: Uses a keyfile for two-factor auth
+hako init               # Standard setup
+hako init --gen-keyfile # Recommended: Generates and binds a keyfile for two-factor auth
 ```
 
 ### 2. Add and get passwords
@@ -68,7 +68,7 @@ clipboard:
 ---
 
 ## Security reminders
-*   **Don't lose your keyfile**: If you used `--keyfile` during init, you need that file to unlock your vault. Keep a backup on a separate USB drive.
+*   **Don't lose your keyfile**: If you used `--gen-keyfile` during init, you need that file to unlock your vault. Keep a backup on a separate USB drive.
 *   **Watch your history**: Commands like `hako get --show` print your password to the screen. Be careful if someone is looking over your shoulder or if you're recording your terminal.
 *   **Exporting data**: The `export` command produces **plaintext**. Use it with caution.
 
