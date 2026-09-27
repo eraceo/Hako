@@ -95,25 +95,27 @@ func printAuditReport(report *audit.Report) {
 	// Setup tabwriter for aligned columns.
 	// minwidth=0, tabwidth=0, padding=3, padchar=' ', flags=0
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	_, _ = fmt.Fprintln(w, "SEVERITY\tISSUE\tENTRY\tDETAILS")
+	_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+		ui.ColorBold("SEVERITY"),
+		ui.ColorBold("ISSUE"),
+		ui.ColorBold("ENTRY"),
+		ui.ColorBold("DETAILS"),
+	)
 	_, _ = fmt.Fprintln(w, "--------\t-----\t-----\t-------")
 
 	for _, issue := range report.Issues {
-		severityColor := ""
+		severityFormatted := issue.Severity
 		switch issue.Severity {
 		case audit.SeverityHigh: // Use constants from audit package
-			severityColor = "\033[31m" // Red
+			severityFormatted = ui.ColorRed(issue.Severity)
 		case audit.SeverityMedium:
-			severityColor = "\033[33m" // Yellow
+			severityFormatted = ui.ColorYellow(issue.Severity)
 		case audit.SeverityLow:
-			severityColor = "\033[36m" // Cyan
+			severityFormatted = ui.ColorCyan(issue.Severity)
 		}
-		resetColor := "\033[0m"
 
-		// We include colors in the first column. Tabwriter might miscalculate width slightly
-		// due to invisible escape codes, but since all rows have colors, it usually aligns visually.
-		_, _ = fmt.Fprintf(w, "%s%s%s\t%s\t%s\t%s\n",
-			severityColor, issue.Severity, resetColor,
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+			severityFormatted,
 			issue.Type,
 			ui.SanitizeString(truncate(issue.EntryName, 30)), // Cap length and sanitize ANSI
 			issue.Description,

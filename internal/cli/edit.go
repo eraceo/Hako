@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -30,6 +31,11 @@ type editOptions struct {
 	Notes       string
 	Tags        []string
 	Generate    bool
+	PassLength  int
+	Symbols     bool
+	NoSymbols   bool
+	Memorable   bool
+	NoSimilar   bool
 	Interactive bool
 }
 
@@ -50,6 +56,11 @@ You can update individual fields using flags or be prompted interactively.`,
 	cmd.Flags().StringP("notes", "n", "", "new notes")
 	cmd.Flags().StringSliceP("tags", "t", []string{}, "new tags (comma-separated)")
 	cmd.Flags().BoolP("generate", "g", false, "generate a new password")
+	cmd.Flags().IntP("length", "l", 16, "length of generated password")
+	cmd.Flags().Bool("symbols", true, "include symbols in generated password")
+	cmd.Flags().Bool("no-symbols", false, "exclude symbols in generated password")
+	cmd.Flags().Bool("memorable", false, "generate memorable password")
+	cmd.Flags().Bool("no-similar", false, "exclude similar characters in generated password")
 
 	return cmd
 }
@@ -142,12 +153,32 @@ func parseEditFlags(cmd *cobra.Command, nameOrID string) (editOptions, error) {
 	if opts.Generate, err = cmd.Flags().GetBool("generate"); err != nil {
 		return opts, fmt.Errorf("failed to parse generate flag: %w", err)
 	}
+	if opts.PassLength, err = cmd.Flags().GetInt("length"); err != nil {
+		return opts, fmt.Errorf("failed to parse length flag: %w", err)
+	}
+	if opts.Symbols, err = cmd.Flags().GetBool("symbols"); err != nil {
+		return opts, fmt.Errorf("failed to parse symbols flag: %w", err)
+	}
+	if opts.NoSymbols, err = cmd.Flags().GetBool("no-symbols"); err != nil {
+		return opts, fmt.Errorf("failed to parse no-symbols flag: %w", err)
+	}
+	if opts.Memorable, err = cmd.Flags().GetBool("memorable"); err != nil {
+		return opts, fmt.Errorf("failed to parse memorable flag: %w", err)
+	}
+	if opts.NoSimilar, err = cmd.Flags().GetBool("no-similar"); err != nil {
+		return opts, fmt.Errorf("failed to parse no-similar flag: %w", err)
+	}
 
 	anyFlagChanged := cmd.Flags().Changed("user") ||
 		cmd.Flags().Changed("url") ||
 		cmd.Flags().Changed("notes") ||
 		cmd.Flags().Changed("tags") ||
-		cmd.Flags().Changed("generate")
+		cmd.Flags().Changed("generate") ||
+		cmd.Flags().Changed("length") ||
+		cmd.Flags().Changed("symbols") ||
+		cmd.Flags().Changed("no-symbols") ||
+		cmd.Flags().Changed("memorable") ||
+		cmd.Flags().Changed("no-similar")
 
 	opts.Interactive = !anyFlagChanged
 	return opts, nil
@@ -192,18 +223,90 @@ func updateEntryFields(cmd *cobra.Command, entry *secrets.Entry, opts editOption
 	return nil
 }
 
+func promptWithExisting(fieldLabel string, secret secrets.EphemeralSecret) ([]byte, bool, error) {
+	if len(secret) == 0 {
+		fmt.Fprintf(os.Stderr, "New %s (leave blank to keep, '-' to clear): ", fieldLabel)
+		raw, readErr := ui.ReadUnbufferedLine()
+		if readErr != nil {
+			return nil, false, readErr
+		}
+		clean := bytes.TrimSpace(raw)
+		if isClearCommand(clean) {
+			memory.SecureZero(raw)
+			return nil, true, nil
+		}
+		return raw, false, nil
+	}
+
+	var input []byte
+	var cleared bool
+	var readErr error
+
+	accessErr := secret.Access(func(b []byte) error {
+		sanitized := ui.SanitizeBytes(b)
+		defer memory.SecureZero(sanitized)
+
+		fmt.Fprintf(os.Stderr, "New %s [", fieldLabel)
+		_, _ = os.Stderr.Write(sanitized)
+		fmt.Fprint(os.Stderr, "] (leave blank to keep, '-' to clear): ")
+
+		raw, err := ui.ReadUnbufferedLine()
+		if err != nil {
+			readErr = err
+			return nil
+		}
+		clean := bytes.TrimSpace(raw)
+		if isClearCommand(clean) {
+			memory.SecureZero(raw)
+			cleared = true
+			return nil
+		}
+		input = raw
+		return nil
+	})
+
+	if accessErr != nil {
+		return nil, false, accessErr
+	}
+	if readErr != nil {
+		return nil, false, readErr
+	}
+
+	return input, cleared, nil
+}
+
+func isClearCommand(b []byte) bool {
+	if len(b) == 1 && b[0] == '-' {
+		return true
+	}
+	if bytes.EqualFold(b, []byte("clear")) || bytes.EqualFold(b, []byte("none")) {
+		return true
+	}
+	return false
+}
+
 func updateUsername(cmd *cobra.Command, entry *secrets.Entry, opts editOptions) error {
 	if opts.Interactive {
-		val, err := ui.PromptString("New Username (leave blank to keep current): ")
+		val, cleared, err := promptWithExisting("Username", entry.Username)
 		if err != nil {
 			return fmt.Errorf("failed to read username: %w", err)
 		}
 		defer memory.SecureZero(val)
-		if len(val) > 0 {
+
+		if cleared {
+			if len(entry.Username) > 0 {
+				memory.SecureZero(entry.Username)
+			}
+			entry.Username = nil
+			return nil
+		}
+
+		cleanVal := bytes.TrimSpace(val)
+		if len(cleanVal) > 0 {
 			if len(entry.Username) > 0 {
 				memory.SecureZero(entry.Username) // Wipe old ciphertext safely
 			}
-			entry.Username = secrets.NewEphemeralSecret(val)
+			entry.Username = secrets.NewEphemeralSecret(cleanVal)
 		}
 		return nil
 	}
@@ -241,10 +344,15 @@ func updatePassword(cmd *cobra.Command, entry *secrets.Entry, opts editOptions) 
 	}
 
 	if cmd.Flags().Changed("generate") && opts.Generate {
+		passLen := opts.PassLength
+		if passLen < 1 {
+			passLen = 16
+		}
 		genOpts := secrets.GeneratorOptions{
-			Length:     16,
-			UseSymbols: true,
-			Memorable:  false,
+			Length:     passLen,
+			UseSymbols: opts.Symbols && !opts.NoSymbols,
+			Memorable:  opts.Memorable,
+			NoSimilar:  opts.NoSimilar,
 		}
 		generated, err := secrets.GeneratePassword(genOpts)
 		if err != nil {
@@ -266,16 +374,26 @@ func updatePassword(cmd *cobra.Command, entry *secrets.Entry, opts editOptions) 
 
 func updateURL(cmd *cobra.Command, entry *secrets.Entry, opts editOptions) error {
 	if opts.Interactive {
-		val, err := ui.PromptString("New URL (leave blank to keep current): ")
+		val, cleared, err := promptWithExisting("URL", entry.URL)
 		if err != nil {
 			return fmt.Errorf("failed to read URL: %w", err)
 		}
 		defer memory.SecureZero(val)
-		if len(val) > 0 {
+
+		if cleared {
 			if len(entry.URL) > 0 {
 				memory.SecureZero(entry.URL)
 			}
-			entry.URL = secrets.NewEphemeralSecret(val)
+			entry.URL = nil
+			return nil
+		}
+
+		cleanVal := bytes.TrimSpace(val)
+		if len(cleanVal) > 0 {
+			if len(entry.URL) > 0 {
+				memory.SecureZero(entry.URL)
+			}
+			entry.URL = secrets.NewEphemeralSecret(cleanVal)
 		}
 		return nil
 	}
@@ -297,16 +415,26 @@ func updateURL(cmd *cobra.Command, entry *secrets.Entry, opts editOptions) error
 
 func updateNotes(cmd *cobra.Command, entry *secrets.Entry, opts editOptions) error {
 	if opts.Interactive {
-		val, err := ui.PromptString("New Notes (leave blank to keep current): ")
+		val, cleared, err := promptWithExisting("Notes", entry.Notes)
 		if err != nil {
 			return fmt.Errorf("failed to read notes: %w", err)
 		}
 		defer memory.SecureZero(val)
-		if len(val) > 0 {
+
+		if cleared {
 			if len(entry.Notes) > 0 {
 				memory.SecureZero(entry.Notes)
 			}
-			entry.Notes = secrets.NewEphemeralSecret(val)
+			entry.Notes = nil
+			return nil
+		}
+
+		cleanVal := bytes.TrimSpace(val)
+		if len(cleanVal) > 0 {
+			if len(entry.Notes) > 0 {
+				memory.SecureZero(entry.Notes)
+			}
+			entry.Notes = secrets.NewEphemeralSecret(cleanVal)
 		}
 		return nil
 	}
@@ -328,10 +456,10 @@ func updateNotes(cmd *cobra.Command, entry *secrets.Entry, opts editOptions) err
 
 func updateTags(cmd *cobra.Command, entry *secrets.Entry, opts editOptions) error {
 	if opts.Interactive {
-		promptStr := "New Tags (comma-separated, leave blank to keep current): "
+		promptStr := "New Tags (comma-separated, leave blank to keep, '-' to clear): "
 		currentTags := strings.Join(entry.Tags, ", ")
 		if currentTags != "" {
-			promptStr = fmt.Sprintf("New Tags [%s] (leave blank to keep current): ", currentTags)
+			promptStr = fmt.Sprintf("New Tags [%s] (leave blank to keep, '-' to clear): ", currentTags)
 		}
 
 		newTagsBytes, err := ui.PromptString(promptStr)
@@ -340,8 +468,14 @@ func updateTags(cmd *cobra.Command, entry *secrets.Entry, opts editOptions) erro
 		}
 		defer memory.SecureZero(newTagsBytes)
 
-		if len(newTagsBytes) > 0 {
-			rawTags := strings.Split(string(newTagsBytes), ",")
+		clean := bytes.TrimSpace(newTagsBytes)
+		if isClearCommand(clean) {
+			entry.Tags = nil
+			return nil
+		}
+
+		if len(clean) > 0 {
+			rawTags := strings.Split(string(clean), ",")
 			var cleanTags []string
 			for _, t := range rawTags {
 				t = strings.TrimSpace(t)

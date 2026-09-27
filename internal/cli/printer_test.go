@@ -134,3 +134,32 @@ func TestPrintEntriesTable(t *testing.T) {
 	assert.NotContains(t, actualOutput, "hunter123")
 	assert.NotContains(t, actualOutput, "some notes")
 }
+
+func TestComputeColumnWidths(t *testing.T) {
+	tests := []struct {
+		name      string
+		termWidth int
+		expName   int
+		expUser   int
+		expURL    int
+		expTags   int
+	}{
+		{"Fallback on non-positive", 0, 15, 15, 25, 15},
+		{"Fallback on negative", -1, 15, 15, 25, 15},
+		{"Exact base 73", 73, 15, 15, 25, 15},
+		{"Narrow 50 cols", 50, 11, 11, 14, 13},
+		{"Ultra-narrow 30 cols clamped to minimums", 30, 10, 10, 12, 6},
+		{"Wide 120 cols", 120, 26, 22, 48, 19},
+		{"Ultra-wide 250 cols clamped to maximums", 250, 35, 30, 80, 25},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wName, wUser, wURL, wTags := computeColumnWidths(tt.termWidth)
+			assert.Equal(t, tt.expName, wName, "Name width")
+			assert.Equal(t, tt.expUser, wUser, "Username width")
+			assert.Equal(t, tt.expURL, wURL, "URL width")
+			assert.Equal(t, tt.expTags, wTags, "Tags width")
+		})
+	}
+}

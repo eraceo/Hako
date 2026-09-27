@@ -48,6 +48,18 @@ func getInitCmdTestCases() []initTestCase {
 			},
 		},
 		{
+			name:        "Initialize vault with generate-keyfile alias",
+			args:        []string{"--generate-keyfile", "--argon-memory=1024", "--argon-iter=1"},
+			vaultPath:   "gen_kf_init.vault",
+			keyfilePath: "gen_kf_init.key",
+			// Input: Strong password + confirmation
+			simulatedInput: "VeryStrongMasterPass123!\nVeryStrongMasterPass123!\n",
+			expectedContains: []string{
+				"Keyfile generated at:",
+				"Vault initialized successfully at:",
+			},
+		},
+		{
 			name:           "Fails on password mismatch",
 			args:           []string{},
 			vaultPath:      "mismatch.vault",
@@ -156,7 +168,7 @@ func TestInitCmd(t *testing.T) {
 				assert.FileExists(t, absVaultPath)
 
 				// Verify the keyfile if it was requested
-				if tt.keyfilePath != "" && strings.Contains(strings.Join(cmdArgs, " "), "--gen-keyfile") {
+				if tt.keyfilePath != "" && (strings.Contains(strings.Join(cmdArgs, " "), "--gen-keyfile") || strings.Contains(strings.Join(cmdArgs, " "), "--generate-keyfile")) {
 					assert.FileExists(t, absKeyPath)
 
 					// A secure keyfile should be exactly 256 bytes per secrets.GenerateKeyfile logic

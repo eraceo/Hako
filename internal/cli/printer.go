@@ -1,26 +1,90 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"golang.org/x/term"
 
 	"github.com/eraceo/Hako/internal/secrets"
 	"github.com/eraceo/Hako/internal/ui"
 )
 
 const (
-	maxNameDisplayLength     = 15
-	maxUsernameDisplayLength = 15
-	maxURLDisplayLength      = 25
-	maxTagsDisplayLength     = 15
-	ellipsis                 = "..."
-	ellipsisLen              = 3
+	defaultNameDisplayLength     = 15
+	defaultUsernameDisplayLength = 15
+	defaultURLDisplayLength      = 25
+	defaultTagsDisplayLength     = 15
+	ellipsis                     = "..."
+	ellipsisLen                  = 3
 
 	// paddingBuffer is a pre-allocated string of spaces used for efficient slicing.
 	paddingBuffer = "                                                                                                    "
 )
+
+// computeColumnWidths calculates responsive column widths based on terminal dimensions.
+func computeColumnWidths(termWidth int) (wName, wUser, wURL, wTags int) {
+	const (
+		baseName, baseUser, baseURL, baseTags = 15, 15, 25, 15
+		minName, minUser, minURL, minTags     = 10, 10, 12, 6
+		maxName, maxUser, maxURL, maxTags     = 35, 30, 80, 25
+		baseTotal                             = 73 // 15 + 1 + 15 + 1 + 25 + 1 + 15
+		minTotal                              = 41 // 10 + 1 + 10 + 1 + 12 + 1 + 6
+	)
+
+	// Fallback to default base widths if non-TTY or detection failed
+	if termWidth <= 0 {
+		return baseName, baseUser, baseURL, baseTags
+	}
+
+	// Terminal narrower than base (41 to 72)
+	if termWidth < baseTotal {
+		if termWidth <= minTotal {
+			return minName, minUser, minURL, minTags
+		}
+		deficit := baseTotal - termWidth
+		wName = baseName - (deficit * 20 / 100)
+		if wName < minName {
+			wName = minName
+		}
+		wUser = baseUser - (deficit * 20 / 100)
+		if wUser < minUser {
+			wUser = minUser
+		}
+		wURL = baseURL - (deficit * 50 / 100)
+		if wURL < minURL {
+			wURL = minURL
+		}
+		wTags = baseTags - (deficit * 10 / 100)
+		if wTags < minTags {
+			wTags = minTags
+		}
+		return wName, wUser, wURL, wTags
+	}
+
+	// Terminal wider than base (> 73)
+	extra := termWidth - baseTotal
+	wName = baseName + (extra * 25 / 100)
+	if wName > maxName {
+		wName = maxName
+	}
+	wUser = baseUser + (extra * 15 / 100)
+	if wUser > maxUser {
+		wUser = maxUser
+	}
+	wURL = baseURL + (extra * 50 / 100)
+	if wURL > maxURL {
+		wURL = maxURL
+	}
+	wTags = baseTags + (extra * 10 / 100)
+	if wTags > maxTags {
+		wTags = maxTags
+	}
+	return wName, wUser, wURL, wTags
+}
 
 // printEntriesTable prints a list of entries in a formatted, memory-safe table.
 func printEntriesTable(entries []*secrets.Entry) {
@@ -29,46 +93,61 @@ func printEntriesTable(entries []*secrets.Entry) {
 		return
 	}
 
+	termWidth := 0
+	if fd := int(os.Stdout.Fd()); term.IsTerminal(fd) {
+		if w, _, err := term.GetSize(fd); err == nil {
+			termWidth = w
+		}
+	}
+
+	wName, wUser, wURL, wTags := computeColumnWidths(termWidth)
+
 	// Header
-	ui.Printf("%-15s %-15s %-25s %-15s\n", "NAME", "USERNAME", "URL", "TAGS")
-	ui.Println(strings.Repeat("-", 73))
+	nameHeader := ui.ColorBold(fmt.Sprintf("%-*s", wName, "NAME"))
+	userHeader := ui.ColorBold(fmt.Sprintf("%-*s", wUser, "USERNAME"))
+	urlHeader := ui.ColorBold(fmt.Sprintf("%-*s", wURL, "URL"))
+	tagsHeader := ui.ColorBold(fmt.Sprintf("%-*s", wTags, "TAGS"))
+	ui.Printf("%s %s %s %s\n", nameHeader, userHeader, urlHeader, tagsHeader)
+
+	totalWidth := wName + 1 + wUser + 1 + wURL + 1 + wTags
+	ui.Println(strings.Repeat("-", totalWidth))
 
 	for _, entry := range entries {
 		// NAME (Public Metadata)
-		writeStringField(ui.SanitizeString(entry.Name), maxNameDisplayLength)
+		writeStringField(ui.SanitizeString(entry.Name), wName)
 		writeSpace()
 
 		// USERNAME (Secure)
 		if entry.Username != nil {
 			err := entry.Username.Access(func(u []byte) error {
-				writeSecureField(u, maxUsernameDisplayLength)
+				writeSecureField(u, wUser)
 				return nil
 			})
 			if err != nil {
-				writePadding(maxUsernameDisplayLength)
+				writePadding(wUser)
 			}
 		} else {
-			writePadding(maxUsernameDisplayLength)
+			writePadding(wUser)
 		}
 		writeSpace()
 
 		// URL (Secure)
 		if entry.URL != nil {
 			err := entry.URL.Access(func(url []byte) error {
-				writeSecureField(url, maxURLDisplayLength)
+				writeSecureField(url, wURL)
 				return nil
 			})
 			if err != nil {
-				writePadding(maxURLDisplayLength)
+				writePadding(wURL)
 			}
 		} else {
-			writePadding(maxURLDisplayLength)
+			writePadding(wURL)
 		}
 		writeSpace()
 
 		// TAGS (Public Metadata)
 		tagsStr := strings.Join(entry.Tags, ", ")
-		writeStringField(ui.SanitizeString(tagsStr), maxTagsDisplayLength)
+		writeStringField(ui.SanitizeString(tagsStr), wTags)
 
 		// End of row
 		ui.Println()

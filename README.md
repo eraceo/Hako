@@ -31,24 +31,27 @@ sudo make install
 
 ### 1. Initialize
 ```bash
-hako init           # Standard vault
-hako init --keyfile # Enhanced security (Recommended)
+hako init               # Standard vault
+hako init --gen-keyfile # Enhanced security with 2FA keyfile (Recommended)
 ```
 
 ### 2. Basic commands
 ```bash
-hako add github           # Interactive add
-hako get github --clip    # Copy password to clipboard
-hako search github        # Search by name, user, or URL
-hako list                 # Show all entries
-hako edit github --user x # Update an entry
-hako rm github            # Delete an entry
+hako add github                   # Interactive add
+hako add github -u dev --password-stdin # Add via pipe/stdin
+hako get github --clip            # Copy password to clipboard
+hako get github -p                # Output raw password to stdout
+hako search github                # Search by name, user, or URL
+hako list                         # Show all entries
+hako edit github --user x         # Update an entry
+hako rm github                    # Delete an entry
 ```
 
 ### 3. Generate passwords
 ```bash
 hako generate             # Random 16 chars
 hako generate --memorable # Dictionary passphrase
+hako generate --clip      # Generate and copy to clipboard
 ```
 
 ---
