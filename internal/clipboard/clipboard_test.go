@@ -316,13 +316,14 @@ func TestCopySecureDaemon_Fallback(t *testing.T) {
 	secretCopy := make([]byte, len(secret))
 	copy(secretCopy, secret)
 
-	// Since SpawnDaemon will fail, CopySecureDaemon will fall back to CopySecureSilent
+	// Since SpawnDaemon will fail, CopySecureDaemon will fall back to synchronous waitAndClear without re-writing
 	err := m.CopySecureDaemon(secret, 50*time.Millisecond)
 	assert.NoError(t, err)
 
-	// Verify that writeToClipboard was called with the actual secret bytes
-	require.NotEmpty(t, *calls)
+	// Verify that writeToClipboard was called once with secret bytes, followed by one clear
+	require.Len(t, *calls, 2)
 	assert.Equal(t, secretCopy, (*calls)[0].Stdin, "First write should contain the original secret payload")
+	assert.Empty(t, (*calls)[1].Stdin, "Second clipboard operation must clear the clipboard")
 }
 
 func TestCopySecureDaemon_Success(t *testing.T) {

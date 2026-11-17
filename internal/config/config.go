@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/spf13/viper"
+
+	"github.com/eraceo/Hako/internal/crypto"
 )
 
 type configKey struct{}
@@ -157,6 +159,16 @@ func defaultConfig() (*Config, error) {
 
 // Load loads configuration from file, environment, and defaults.
 func Load(configFile string) (*Config, error) {
+	return loadWithOptions(configFile, false)
+}
+
+// LoadAllowMissing loads configuration like Load, but allows an explicit configFile
+// path that does not exist yet (e.g., during initial `hako init --config=...`).
+func LoadAllowMissing(configFile string) (*Config, error) {
+	return loadWithOptions(configFile, true)
+}
+
+func loadWithOptions(configFile string, allowMissing bool) (*Config, error) {
 	// Get hardcoded defaults
 	defaults, err := defaultConfig()
 	if err != nil {
@@ -165,7 +177,7 @@ func Load(configFile string) (*Config, error) {
 
 	// Initialize Viper with these defaults
 	v := viper.New()
-	if err := setupViper(v, configFile, defaults); err != nil {
+	if err := setupViper(v, configFile, defaults, allowMissing); err != nil {
 		return nil, err
 	}
 
@@ -190,7 +202,7 @@ func Load(configFile string) (*Config, error) {
 }
 
 // setupViper initializes a viper instance with paths, env vars, and defaults.
-func setupViper(v *viper.Viper, configFile string, defaults *Config) error {
+func setupViper(v *viper.Viper, configFile string, defaults *Config, allowMissing bool) error {
 	if configFile != "" {
 		v.SetConfigFile(configFile)
 	} else {
@@ -225,7 +237,8 @@ func setupViper(v *viper.Viper, configFile string, defaults *Config) error {
 
 	if err := v.ReadInConfig(); err != nil {
 		var configFileNotFoundError viper.ConfigFileNotFoundError
-		if !errors.As(err, &configFileNotFoundError) {
+		isMissingExplicit := allowMissing && errors.Is(err, os.ErrNotExist)
+		if !errors.As(err, &configFileNotFoundError) && !isMissingExplicit {
 			return fmt.Errorf("failed to read config file: %w", err)
 		}
 	}
@@ -285,15 +298,24 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("%w: vault_path cannot be empty", ErrInvalidConfig)
 	}
 
-	// Argon2 Safety Checks (prevent accidental weak settings)
-	if c.Argon2.Iterations < 1 {
-		return fmt.Errorf("%w: argon2.iterations must be at least 1", ErrInvalidConfig)
+	// Argon2 Safety Checks (prevent accidental weak or DoS-inducing settings)
+	if c.Argon2.Iterations < crypto.MinArgonIterations {
+		return fmt.Errorf("%w: argon2.iterations must be at least %d", ErrInvalidConfig, crypto.MinArgonIterations)
 	}
-	if c.Argon2.MemoryKiB < 1024 {
-		return fmt.Errorf("%w: argon2.memory_kib must be at least 1024 (1 MiB)", ErrInvalidConfig)
+	if c.Argon2.Iterations > crypto.MaxArgonIterations {
+		return fmt.Errorf("%w: argon2.iterations must be at most %d", ErrInvalidConfig, crypto.MaxArgonIterations)
 	}
-	if c.Argon2.Parallelism < 1 {
-		return fmt.Errorf("%w: argon2.parallelism must be at least 1", ErrInvalidConfig)
+	if c.Argon2.MemoryKiB < crypto.MinArgonMemory {
+		return fmt.Errorf("%w: argon2.memory_kib must be at least %d (1 MiB)", ErrInvalidConfig, crypto.MinArgonMemory)
+	}
+	if c.Argon2.MemoryKiB > crypto.MaxArgonMemory {
+		return fmt.Errorf("%w: argon2.memory_kib must be at most %d (512 MiB)", ErrInvalidConfig, crypto.MaxArgonMemory)
+	}
+	if c.Argon2.Parallelism < crypto.MinParallelism {
+		return fmt.Errorf("%w: argon2.parallelism must be at least %d", ErrInvalidConfig, crypto.MinParallelism)
+	}
+	if c.Argon2.Parallelism > crypto.MaxParallelism {
+		return fmt.Errorf("%w: argon2.parallelism must be at most %d", ErrInvalidConfig, crypto.MaxParallelism)
 	}
 
 	// Audit Safety Checks
@@ -356,14 +378,25 @@ func EnsureDirectories(cfg *Config) error {
 	return nil
 }
 
-// CreateDefaultConfigFile creates a default configuration file if it doesn't exist
+// CreateDefaultConfigFile creates a default configuration file if it doesn't exist.
 func CreateDefaultConfigFile() error {
-	configDir, err := getConfigDir()
-	if err != nil {
-		return fmt.Errorf("failed to get config directory: %w", err)
-	}
+	return CreateDefaultConfigFileAt("")
+}
 
-	configPath := filepath.Join(configDir, "config.yaml")
+// CreateDefaultConfigFileAt creates a default configuration file at configPath if it doesn't exist.
+// If configPath is empty, the platform default config.yaml location is used.
+func CreateDefaultConfigFileAt(configPath string) error {
+	var configDir string
+	if configPath == "" {
+		var err error
+		configDir, err = getConfigDir()
+		if err != nil {
+			return fmt.Errorf("failed to get config directory: %w", err)
+		}
+		configPath = filepath.Join(configDir, "config.yaml")
+	} else {
+		configDir = filepath.Dir(configPath)
+	}
 
 	if mkdirErr := os.MkdirAll(configDir, 0700); mkdirErr != nil {
 		return fmt.Errorf("failed to create config directory: %w", mkdirErr)

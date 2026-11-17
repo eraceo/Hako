@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -83,6 +84,20 @@ func TestRekeyCmd(t *testing.T) {
 			setupVault:     true,
 		},
 		{
+			name:           "Fails if memory is explicitly set to 0",
+			args:           []string{"rekey", "--memory=0"},
+			simulatedInput: masterPass + "\n",
+			expectedError:  "invalid memory setting",
+			setupVault:     true,
+		},
+		{
+			name:           "Fails if memory exceeds maximum",
+			args:           []string{"rekey", "--memory=1048576"},
+			simulatedInput: masterPass + "\n",
+			expectedError:  "invalid memory setting",
+			setupVault:     true,
+		},
+		{
 			name:           "Fails when vault does not exist",
 			args:           []string{"rekey"},
 			simulatedInput: masterPass + "\n",
@@ -121,4 +136,32 @@ func TestRekeyCmd(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("Apply-config updates vault parameters from custom config", func(t *testing.T) {
+		isolateCLIEnv(t, false)
+		vaultPath := filepath.Join(t.TempDir(), "custom_apply_cfg.hako")
+		setupTestVault(t, vaultPath, masterPass, []string{"targetEntry"})
+
+		cfgPath := filepath.Join(t.TempDir(), "rekey_cfg.yaml")
+		yamlCfg := []byte("vault_path: \"" + filepath.ToSlash(vaultPath) + "\"\n" +
+			"keyfile_path: \"none\"\n" +
+			"argon2:\n  memory_kib: 2048\n  iterations: 2\n  parallelism: 2\n")
+		// #nosec G306 -- Test configuration file
+		require.NoError(t, os.WriteFile(cfgPath, yamlCfg, 0600))
+
+		cmdArgs := []string{"rekey", "--apply-config", "--config=" + cfgPath, "--vault=" + vaultPath, "--keyfile=none"}
+		output, err := executeCommandWithMocks(t, cmdArgs, masterPass+"\n")
+		require.NoError(t, err)
+		assert.Contains(t, output, "Vault rekeyed successfully")
+
+		vf := storage.NewVaultFile(vaultPath)
+		v, loadErr := vf.Load(context.Background(), []byte(masterPass), nil)
+		require.NoError(t, loadErr)
+		defer v.Zero()
+
+		hdr := vf.Header()
+		assert.Equal(t, uint32(2048), hdr.Argon2Params.Memory)
+		assert.Equal(t, uint32(2), hdr.Argon2Params.Iterations)
+		assert.Equal(t, uint8(2), hdr.Argon2Params.Parallelism)
+	})
 }

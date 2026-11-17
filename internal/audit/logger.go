@@ -3,6 +3,7 @@ package audit
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"crypto/rand"
 	"encoding/hex"
@@ -44,6 +45,8 @@ const (
 	EventEntrySearch EventType = "entry_search"
 	// EventEntryList represents an entry listing event
 	EventEntryList EventType = "entry_list"
+	// EventVaultAudit represents a local vault security audit event
+	EventVaultAudit EventType = "vault_audit"
 	// EventPasswordGen represents a password generation event
 	EventPasswordGen EventType = "password_generate"
 	// EventExport represents a vault export event
@@ -190,7 +193,12 @@ func (al *Logger) writeEvent(event *Event) error {
 
 	// Inter-process file locking to prevent multi-process log corruption
 	if al.logPath != "" {
-		lock, _ := acquireFileLock(al.logPath + ".lock")
+		lock, lockErr := acquireFileLock(al.logPath + ".lock")
+		if lockErr != nil {
+			// Emit non-blocking warning so filesystems lacking flock (e.g., WSL/containers) degrade visibly.
+			// #nosec G104 -- Best effort fallback warning
+			_, _ = fmt.Fprintf(os.Stderr, "Hako Audit Warning: failed to acquire file lock: %v\n", lockErr)
+		}
 		if lock != nil {
 			defer lock.release()
 		}
@@ -258,6 +266,11 @@ func (al *Logger) writeEvent(event *Event) error {
 	return nil
 }
 
+const (
+	anchorFileSuffix       = ".anchor"
+	tailReadWindow   int64 = 16 * 1024
+)
+
 // rotate performs log rotation by shifting backups and optionally compressing the oldest.
 func (al *Logger) rotate() error {
 	if al.logPath == "" {
@@ -265,11 +278,33 @@ func (al *Logger) rotate() error {
 	}
 
 	if al.maxBackups <= 0 {
+		if al.enableHashChain {
+			if evictedHash := readLastHashFromFile(al.logPath); evictedHash != "" {
+				if err := writeAnchorHash(al.logPath, evictedHash); err != nil {
+					return err
+				}
+			}
+		}
 		return os.Remove(al.logPath)
 	}
 
-	// Remove backup exceeding maxBackups if it exists
+	// Preserve anchor hash from the oldest backup right before it is evicted.
 	oldestBase := fmt.Sprintf("%s.%d", al.logPath, al.maxBackups)
+	if al.enableHashChain {
+		var evictedHash string
+		if _, err := os.Stat(oldestBase + ".gz"); err == nil {
+			evictedHash = readLastHashFromFile(oldestBase + ".gz")
+		} else if _, err := os.Stat(oldestBase); err == nil {
+			evictedHash = readLastHashFromFile(oldestBase)
+		}
+		if evictedHash != "" {
+			if err := writeAnchorHash(al.logPath, evictedHash); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Remove backup exceeding maxBackups if it exists
 	_ = os.Remove(oldestBase)
 	_ = os.Remove(oldestBase + ".gz")
 
@@ -324,7 +359,8 @@ func compressFile(srcPath string) {
 	}
 }
 
-// readLastHash reads the hash of the last valid event in logPath or its archives using file discovery.
+// readLastHash reads the hash of the last valid event in logPath or its archives.
+// Uncompressed logs use an O(1) tail seek with fallback to a full scan on oversized lines.
 func readLastHash(logPath string) string {
 	if logPath == "" {
 		return GenesisHash
@@ -335,51 +371,166 @@ func readLastHash(logPath string) string {
 		return GenesisHash
 	}
 
-	// Read backwards starting from the most recent file in discovery order
+	// Read backwards starting from the most recent file in discovery order (active log first, then .1/.1.gz).
 	for i := len(files) - 1; i >= 0; i-- {
-		hash := func() string {
-			filePath := files[i].path
-			// #nosec G304 -- Internal log file path for hash calculation
-			f, err := os.Open(filePath)
-			if err != nil {
-				return ""
-			}
-			defer func() { _ = f.Close() }()
-
-			var reader io.Reader = f
-			if strings.HasSuffix(filePath, ".gz") {
-				gzReader, err := gzip.NewReader(f)
-				if err != nil {
-					return ""
-				}
-				defer func() { _ = gzReader.Close() }()
-				reader = gzReader
-			}
-
-			scanner := bufio.NewScanner(reader)
-			buf := make([]byte, 64*1024)
-			scanner.Buffer(buf, 10*1024*1024)
-
-			var lastLineHash string
-			for scanner.Scan() {
-				lineText := strings.TrimSpace(scanner.Text())
-				if lineText == "" {
-					continue
-				}
-				var ev Event
-				if err := json.Unmarshal([]byte(lineText), &ev); err == nil && ev.Hash != "" {
-					lastLineHash = ev.Hash
-				}
-			}
-			return lastLineHash
-		}()
-
-		if hash != "" {
+		if hash := readLastHashFromFile(files[i].path); hash != "" {
 			return hash
 		}
 	}
 
+	if anchorHash, err := readAnchorHash(logPath); err == nil && anchorHash != "" {
+		return anchorHash
+	}
+
 	return GenesisHash
+}
+
+func readLastHashFromFile(filePath string) string {
+	if strings.HasSuffix(filePath, ".gz") {
+		// #nosec G304 -- Internal log file path for hash calculation
+		f, err := os.Open(filePath)
+		if err != nil {
+			return ""
+		}
+		defer func() { _ = f.Close() }()
+
+		gzReader, err := gzip.NewReader(f)
+		if err != nil {
+			return ""
+		}
+		defer func() { _ = gzReader.Close() }()
+		return scanLastValidHash(gzReader)
+	}
+
+	return readLastHashUncompressed(filePath)
+}
+
+func readLastHashUncompressed(filePath string) string {
+	// #nosec G304 -- Internal log file path for hash calculation
+	f, err := os.Open(filePath)
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = f.Close() }()
+
+	stat, err := f.Stat()
+	if err != nil || stat.Size() == 0 {
+		return ""
+	}
+
+	startOffset := stat.Size() - tailReadWindow
+	if startOffset < 0 {
+		startOffset = 0
+	}
+	if _, err := f.Seek(startOffset, io.SeekStart); err != nil {
+		return ""
+	}
+
+	buf, err := io.ReadAll(f)
+	if err != nil {
+		return ""
+	}
+
+	// Discard potentially truncated leading line only when seeking mid-file.
+	if startOffset > 0 {
+		idx := bytes.IndexByte(buf, '\n')
+		if idx == -1 {
+			if _, seekErr := f.Seek(0, io.SeekStart); seekErr != nil {
+				return ""
+			}
+			return scanLastValidHash(f)
+		}
+		buf = buf[idx+1:]
+	}
+
+	trimmed := bytes.TrimRight(buf, "\r\n \t")
+	for end := len(trimmed); end > 0; {
+		lastNL := bytes.LastIndexByte(trimmed[:end], '\n')
+		line := bytes.TrimSpace(trimmed[lastNL+1 : end])
+		if len(line) > 0 {
+			var ev Event
+			if err := json.Unmarshal(line, &ev); err == nil && ev.Hash != "" {
+				return ev.Hash
+			}
+		}
+		if lastNL < 0 {
+			break
+		}
+		end = lastNL
+	}
+
+	if startOffset > 0 {
+		if _, seekErr := f.Seek(0, io.SeekStart); seekErr != nil {
+			return ""
+		}
+		return scanLastValidHash(f)
+	}
+
+	return ""
+}
+
+func scanLastValidHash(r io.Reader) string {
+	scanner := bufio.NewScanner(r)
+	buf := make([]byte, 64*1024)
+	scanner.Buffer(buf, 10*1024*1024)
+
+	var lastLineHash string
+	for scanner.Scan() {
+		lineText := strings.TrimSpace(scanner.Text())
+		if lineText == "" {
+			continue
+		}
+		var ev Event
+		if err := json.Unmarshal([]byte(lineText), &ev); err == nil && ev.Hash != "" {
+			lastLineHash = ev.Hash
+		}
+	}
+	return lastLineHash
+}
+
+func writeAnchorHash(logPath, hash string) error {
+	anchorPath := logPath + anchorFileSuffix
+	tmpPath := anchorPath + ".tmp"
+
+	// #nosec G304 -- Internal audit anchor path
+	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("failed to create audit anchor temp file: %w", err)
+	}
+	if _, err := f.WriteString(hash + "\n"); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to write audit anchor: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to sync audit anchor: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to close audit anchor: %w", err)
+	}
+	if err := os.Rename(tmpPath, anchorPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to rename audit anchor: %w", err)
+	}
+	return nil
+}
+
+func readAnchorHash(logPath string) (string, error) {
+	anchorPath := logPath + anchorFileSuffix
+	// #nosec G304 -- Internal audit anchor path
+	data, err := os.ReadFile(anchorPath)
+	if err != nil {
+		return "", err
+	}
+	hash := strings.TrimSpace(string(data))
+	decoded, err := hex.DecodeString(hash)
+	if err != nil || len(decoded) != 32 {
+		return "", ErrInvalidAuditAnchor
+	}
+	return hash, nil
 }
 
 // sanitizeRecursive recursively removes sensitive information using reflection.

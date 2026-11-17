@@ -44,17 +44,24 @@ func runAudit(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if masterPassword != nil {
+			_ = masterPassword.Destroy()
+		}
+		vault.Zero()
+	}()
 
 	// Security: Destroy master password immediately.
 	// The audit scan only requires the decrypted vault entries (EphemeralSecrets) in memory.
 	// We apply the Principle of Least Privilege by wiping the master key before the heavy lifting.
 	if masterPassword != nil {
 		_ = masterPassword.Destroy()
+		masterPassword = nil
 	}
 
 	ui.PrintfInfof("Starting local security audit...")
 
-	audit.LogSuccess(audit.EventEntryList, "Started security audit scan", nil)
+	audit.LogSuccess(audit.EventVaultAudit, "Started security audit scan", nil)
 
 	// CORRECTION: ScanVault requires Context and returns (Report, error).
 	report, err := audit.ScanVault(cmd.Context(), vault)
@@ -65,7 +72,7 @@ func runAudit(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("audit scan failed: %w", err)
 	}
 
-	audit.LogSuccess(audit.EventEntryList, "Security audit scan completed", map[string]interface{}{
+	audit.LogSuccess(audit.EventVaultAudit, "Security audit scan completed", map[string]interface{}{
 		"total_entries":   report.TotalEntries,
 		"security_score":  report.Score,
 		"weak_count":      report.WeakCount,

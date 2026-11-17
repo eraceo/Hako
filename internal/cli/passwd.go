@@ -36,10 +36,6 @@ func runPasswd(cmd *cobra.Command, _ []string) error {
 	// Load vault (prompts for current master password)
 	vault, vaultFile, currentPassword, err := loadVault(cmd.Context(), cfg)
 	if err != nil {
-		// Log explicit authentication failure
-		audit.LogFailure(audit.EventAuthFailure, "Failed to authenticate for password change", map[string]interface{}{
-			"error": err.Error(),
-		})
 		return err
 	}
 	defer func() {

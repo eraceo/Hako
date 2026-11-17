@@ -304,3 +304,62 @@ func TestGetConfigDir_Error(t *testing.T) {
 	_, err := getConfigDir()
 	assert.Error(t, err)
 }
+
+func TestValidate_UpperBounds(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*Config)
+		substr string
+	}{
+		{
+			name:   "iterations too high",
+			mutate: func(c *Config) { c.Argon2.Iterations = 101 },
+			substr: "argon2.iterations must be at most 100",
+		},
+		{
+			name:   "memory too high",
+			mutate: func(c *Config) { c.Argon2.MemoryKiB = 512*1024 + 1 },
+			substr: "argon2.memory_kib must be at most",
+		},
+		{
+			name:   "parallelism too high",
+			mutate: func(c *Config) { c.Argon2.Parallelism = 17 },
+			substr: "argon2.parallelism must be at most 16",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := defaultConfig()
+			require.NoError(t, err)
+			tc.mutate(cfg)
+			err = cfg.Validate()
+			require.ErrorIs(t, err, ErrInvalidConfig)
+			assert.Contains(t, err.Error(), tc.substr)
+		})
+	}
+}
+
+func TestCreateDefaultConfigFileAt_CustomPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	customPath := filepath.Join(tmpDir, "nested", "custom.yaml")
+
+	require.NoError(t, CreateDefaultConfigFileAt(customPath))
+	data, err := os.ReadFile(customPath) // #nosec G304
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "argon2:")
+}
+
+func TestLoadAllowMissing(t *testing.T) {
+	missingPath := filepath.Join(t.TempDir(), "does_not_exist.yaml")
+
+	_, err := Load(missingPath)
+	require.Error(t, err)
+
+	defaults, err := defaultConfig()
+	require.NoError(t, err)
+
+	cfg, err := LoadAllowMissing(missingPath)
+	require.NoError(t, err)
+	assert.Equal(t, defaults.Argon2.MemoryKiB, cfg.Argon2.MemoryKiB)
+}

@@ -34,7 +34,8 @@ and local-first storage to protect your credentials.
 It supports Linux, macOS, and Windows and follows standard XDG Base Directory conventions.`,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			// Injection of local values into the config loader
-			cfg, err := initConfig(cfgFile, vaultPath, keyfile, verbose)
+			allowMissingCfg := cmd != nil && cmd.Name() == "init"
+			cfg, err := initConfigWithOptions(cfgFile, vaultPath, keyfile, verbose, !shouldSkipAuditInit(cmd), allowMissingCfg)
 			if err != nil {
 				return err
 			}
@@ -108,10 +109,38 @@ func Execute(ctx context.Context) error {
 	return NewRootCmd().ExecuteContext(ctx)
 }
 
+func shouldSkipAuditInit(cmd *cobra.Command) bool {
+	if cmd == nil {
+		return false
+	}
+	name := cmd.Name()
+	if name == "__clip-daemon" || name == "version" || name == "help" || name == "completion" {
+		return true
+	}
+	parent := cmd.Parent()
+	if parent != nil && parent.Name() == "completion" {
+		return true
+	}
+	if name == "verify-logs" && parent != nil && parent.Name() == "audit" {
+		return true
+	}
+	return false
+}
+
 // initConfig is a pure function taking values as arguments.
 // It loads configuration AND initializes global infrastructure (Audit).
 func initConfig(cfgFile, vaultPath, keyfile string, verbose bool) (*config.Config, error) {
-	cfg, err := config.Load(cfgFile)
+	return initConfigWithOptions(cfgFile, vaultPath, keyfile, verbose, true, false)
+}
+
+func initConfigWithOptions(cfgFile, vaultPath, keyfile string, verbose, enableAudit, allowMissing bool) (*config.Config, error) {
+	var cfg *config.Config
+	var err error
+	if allowMissing {
+		cfg, err = config.LoadAllowMissing(cfgFile)
+	} else {
+		cfg, err = config.Load(cfgFile)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to load configuration: %w", err)
 	}
@@ -133,21 +162,13 @@ func initConfig(cfgFile, vaultPath, keyfile string, verbose bool) (*config.Confi
 		cfg.LogLevel = "debug"
 	}
 
-	// Initialize the Global Audit Logger immediately after config load with options from config.
-	// This ensures that even early failures or operations are capable of being audited.
-	// Audit is always enabled — it is a non-negotiable security invariant.
-	audit.InitGlobalLoggerFromConfig(cfg)
+	if !enableAudit {
+		audit.InitGlobalLogger("", false)
+		return cfg, nil
+	}
 
-	// Log the initialization of the session (Context Awareness).
-	// SECURITY: We never log the keyfile path — it is a second authentication factor.
-	// Logging its location would give an attacker with log access a direct target.
-	// We only record whether a keyfile is in use.
-	audit.LogSuccess(audit.EventVaultLoad, "CLI Session Initialized", map[string]interface{}{
-		"vault_path":      cfg.VaultPath,
-		"keyfile_enabled": cfg.KeyfilePath != "",
-		"config_file":     cfgFile,
-		"verbose":         verbose,
-	})
+	// Initialize the Global Audit Logger with options from config.
+	audit.InitGlobalLoggerFromConfig(cfg)
 
 	// If verbose mode is on, print where audit logs are going.
 	if verbose {

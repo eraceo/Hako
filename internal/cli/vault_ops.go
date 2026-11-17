@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/eraceo/Hako/internal/audit"
 	"github.com/eraceo/Hako/internal/config"
 	"github.com/eraceo/Hako/internal/memory"
 	"github.com/eraceo/Hako/internal/secrets"
@@ -39,11 +40,18 @@ func loadVault(
 	vaultFile := storage.NewVaultFile(cfg.VaultPath)
 
 	if !vaultFile.Exists() {
+		audit.LogFailure(audit.EventVaultLoad, "Vault file not found", map[string]interface{}{
+			"vault_path": cfg.VaultPath,
+		})
 		return nil, nil, nil, fmt.Errorf("%w: run 'hako init' to create a new vault", ErrVaultNotFound)
 	}
 
 	masterPassword, err := ui.PromptSecurePassword("Master password: ")
 	if err != nil {
+		audit.LogFailure(audit.EventAuthFailure, "Master password prompt failed or canceled", map[string]interface{}{
+			"vault_path": cfg.VaultPath,
+			"error":      err.Error(),
+		})
 		return nil, nil, nil, fmt.Errorf("failed to read master password: %w", err)
 	}
 
@@ -68,8 +76,19 @@ func loadVault(
 		// CRITICAL SECURITY: Destroy the enclave immediately if loading failed.
 		// We must NEVER leak a valid password enclave if the vault could not be decrypted.
 		_ = masterPassword.Destroy()
+		audit.LogFailure(audit.EventVaultLoad, "Failed to unlock vault", map[string]interface{}{
+			"vault_path":      cfg.VaultPath,
+			"keyfile_enabled": cfg.KeyfilePath != "",
+			"error":           err.Error(),
+		})
 		return nil, nil, nil, err
 	}
+
+	// SECURITY: Never log cfg.KeyfilePath — record only whether keyfile auth is active.
+	audit.LogSuccess(audit.EventVaultLoad, "Vault unlocked successfully", map[string]interface{}{
+		"vault_path":      cfg.VaultPath,
+		"keyfile_enabled": cfg.KeyfilePath != "",
+	})
 
 	return vault, vaultFile, masterPassword, nil
 }

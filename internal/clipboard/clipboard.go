@@ -130,17 +130,18 @@ func (m *Manager) CopySecureDaemon(text []byte, timeout time.Duration) error {
 		return err
 	}
 
-	// Try spawning background daemon. If daemon spawning fails, fall back to synchronous CopySecure behavior.
+	// Wipe immediately after clipboard handover, before spawning or falling back to blocking clear.
+	memory.SecureZero(text)
+
+	// Try spawning background daemon. If daemon spawning fails, fall back to blocking clear without re-writing.
 	spawn := m.spawnDaemon
 	if spawn == nil {
 		spawn = SpawnDaemon
 	}
 	if err := spawn(m.tool, timeout); err != nil {
-		return m.CopySecureSilent(text, timeout, true)
+		return m.waitAndClear(timeout, true)
 	}
 
-	// Wipe only after confirming daemon has taken ownership
-	memory.SecureZero(text)
 	return nil
 }
 
@@ -155,22 +156,6 @@ func (m *Manager) CopySecureSilent(text []byte, timeout time.Duration, silent bo
 	// regardless of whether the clipboard write succeeded or not.
 	defer memory.SecureZero(text)
 
-	// copied tracks whether the secret was successfully handed to the OS clipboard.
-	// The deferred Clear() MUST only run if the write succeeded — otherwise it would
-	// attempt to clear a clipboard that was never written, and print a misleading
-	// "Clipboard cleared automatically" message to the user.
-	copied := false
-	defer func() {
-		if !copied {
-			return
-		}
-		if err := m.Clear(); err != nil {
-			ui.PrintfWarningf("Failed to clear OS clipboard: %v\n", err)
-		} else if !silent {
-			ui.PrintfInfof("Clipboard cleared automatically\n")
-		}
-	}()
-
 	// Write the payload to the OS clipboard
 	if err := m.writeToClipboard(text); err != nil {
 		return err
@@ -181,16 +166,23 @@ func (m *Manager) CopySecureSilent(text []byte, timeout time.Duration, silent bo
 	// The secret now only exists in the OS Clipboard/Compositor.
 	memory.SecureZero(text)
 
-	// Mark the clipboard as written so the deferred Clear() runs on exit.
-	copied = true
-
 	if !silent {
 		ui.PrintfSuccessf("Content copied to clipboard\n")
 		ui.PrintfInfof("Clipboard will be cleared in %v. Press Ctrl+C to clear immediately.\n", timeout)
 	}
 
-	// Wait Phase
-	// We block here to keep the process alive so we can execute the deferred Clear().
+	return m.waitAndClear(timeout, silent)
+}
+
+func (m *Manager) waitAndClear(timeout time.Duration, silent bool) error {
+	defer func() {
+		if err := m.Clear(); err != nil {
+			ui.PrintfWarningf("Failed to clear OS clipboard: %v\n", err)
+		} else if !silent {
+			ui.PrintfInfof("Clipboard cleared automatically\n")
+		}
+	}()
+
 	// Using a Timer is more efficient than a Ticker loop.
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()

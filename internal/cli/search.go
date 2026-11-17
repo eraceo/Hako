@@ -31,10 +31,6 @@ func runSearch(cmd *cobra.Command, args []string) error {
 	// Load vault
 	vault, _, masterPassword, err := loadVault(cmd.Context(), cfg)
 	if err != nil {
-		// Log the failure to access the vault for searching
-		audit.LogFailure(audit.EventEntrySearch, "Failed to load vault for search", map[string]interface{}{
-			"error": err.Error(),
-		})
 		return err
 	}
 
