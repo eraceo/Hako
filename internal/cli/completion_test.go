@@ -4,7 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -55,10 +54,6 @@ func TestCompletionCmd(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Clean Environment
-			viper.Reset()
-			// Global rootCmd references removed. Silencing is handled in helper.
-
 			// Prepare strict arguments
 			cmdArgs := append([]string{}, tt.args...)
 			cmdArgs = append(cmdArgs, "--keyfile=none") // Always bypass local config just in case

@@ -3,9 +3,9 @@ package cli
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
-	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -56,6 +56,17 @@ func TestRekeyCmd(t *testing.T) {
 				"Vault rekeyed successfully",
 			},
 			setupVault: true,
+			checkNewParams: func(t *testing.T, vaultPath string) {
+				vf := storage.NewVaultFile(vaultPath)
+				vault, err := vf.Load(context.Background(), []byte(masterPass), nil)
+				require.NoError(t, err)
+				defer vault.Zero()
+
+				header := vf.Header()
+				assert.Equal(t, uint32(1024), header.Argon2Params.Memory)
+				assert.Equal(t, uint32(1), header.Argon2Params.Iterations)
+				assert.Equal(t, uint8(1), header.Argon2Params.Parallelism)
+			},
 		},
 		{
 			name:           "Fails if password is wrong",
@@ -82,14 +93,10 @@ func TestRekeyCmd(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			viper.Reset()
+			isolateCLIEnv(t, true)
 
-			vaultName := "rekey_vault_" + tt.name + ".hako"
+			vaultName := "rekey_vault_" + strings.ReplaceAll(tt.name, " ", "_") + ".hako"
 			testVaultPath := filepath.Clean(filepath.Join(tempDir, vaultName))
-
-			viper.Set("argon2_iterations", 1)
-			viper.Set("argon2_memory", 1024)
-			viper.Set("argon2_parallelism", 1)
 
 			if tt.setupVault {
 				setupTestVault(t, testVaultPath, masterPass, []string{"targetEntry"})

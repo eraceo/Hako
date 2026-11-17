@@ -40,15 +40,20 @@ function Run-Hako {
         [string[]]$HakoArgs,
         [string]$InputString,
         [string]$ExpectedOutputPattern,
-        [bool]$ShouldFail = $false
+        [bool]$ShouldFail = $false,
+        [switch]$NoVaultFlag
     )
 
-    $env:HAKO_VAULT_FILE = $VaultFile
-    
+    $env:HAKO_VAULT_PATH = $VaultFile
+    $env:HAKO_AUDIT_LOG_PATH = (Join-Path $TestDir "audit.log")
     $env:HAKO_KEYFILE_PATH = ""
     
     # Put flags after the command.
-    $CmdArgs = $HakoArgs + @("--vault=$VaultFile", "--config=$ConfigFile", "--keyfile=none")
+    $CmdArgs = @($HakoArgs)
+    if (-not $NoVaultFlag) {
+        $CmdArgs += "--vault=$VaultFile"
+    }
+    $CmdArgs += @("--config=$ConfigFile", "--keyfile=none")
     
     Write-Host "Running: hako $($CmdArgs -join ' ')"
     
@@ -125,6 +130,10 @@ try {
     # 5. List Entries
     Write-Host "`n--- Test: List Entries ---"
     Run-Hako -HakoArgs "list" -InputString $GetInput -ExpectedOutputPattern "github"
+
+    # 5b. List Entries via HAKO_VAULT_PATH (without --vault flag)
+    Write-Host "`n--- Test: List Entries via HAKO_VAULT_PATH ---"
+    Run-Hako -HakoArgs "list" -InputString $GetInput -ExpectedOutputPattern "github" -NoVaultFlag
 
     # 5. Search Entries
     Write-Host "`n--- Test: Search Entries ---"

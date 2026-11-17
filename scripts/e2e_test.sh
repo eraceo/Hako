@@ -40,6 +40,7 @@ run_hako() {
     local input_string=""
     local expected_pattern=""
     local should_fail=false
+    local pass_vault_flag=true
     
     # Parse args manually
     local args=()
@@ -57,6 +58,10 @@ run_hako() {
                 should_fail=true
                 shift
                 ;;
+            --no-vault-flag)
+                pass_vault_flag=false
+                shift
+                ;;
             *)
                 args+=("$1")
                 shift
@@ -64,11 +69,15 @@ run_hako() {
         esac
     done
 
-    export HAKO_VAULT_FILE="$VAULT_FILE"
+    export HAKO_VAULT_PATH="$VAULT_FILE"
+    export HAKO_AUDIT_LOG_PATH="$TEST_DIR/audit.log"
     
     # AND append standard isolating flags
     export HAKO_KEYFILE_PATH=""
-    args+=("--vault=$VAULT_FILE" "--config=$CONFIG_FILE" "--keyfile=none")
+    if [ "$pass_vault_flag" = true ]; then
+        args+=("--vault=$VAULT_FILE")
+    fi
+    args+=("--config=$CONFIG_FILE" "--keyfile=none")
     
     echo "Running: hako ${args[*]}"
     
@@ -150,6 +159,10 @@ run_hako "get" "github" --input "$get_input" --expect "Username.*newuser"
 # 5. List Entries
 echo -e "\n--- Test: List Entries ---"
 run_hako "list" --input "$get_input" --expect "github"
+
+# 5b. List Entries via HAKO_VAULT_PATH (without --vault flag)
+echo -e "\n--- Test: List Entries via HAKO_VAULT_PATH ---"
+run_hako "list" --no-vault-flag --input "$get_input" --expect "github"
 
 # 6. Search Entries
 echo -e "\n--- Test: Search Entries ---"

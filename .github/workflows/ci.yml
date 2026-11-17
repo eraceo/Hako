@@ -116,7 +116,7 @@ jobs:
         go-version: 'stable'
         check-latest: true
     - name: Run Benchmarks (Check Zero-Allocations)
-      run: go test -bench . -benchmem ./internal/crypto/... ./internal/memory/...
+      run: go test -run=^$ -bench . -benchmem ./internal/crypto/... ./internal/memory/... ./internal/encoding/tlv/...
 
   build:
     name: Build Verification
