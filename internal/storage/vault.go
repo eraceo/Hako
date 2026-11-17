@@ -53,17 +53,17 @@ const (
 	HeaderSize = offsetNonce + crypto.NonceSize
 
 	// MinMemory is the minimum memory for Argon2 (1 MiB)
-	MinMemory = 1024
-	// MaxMemory is the maximum memory for Argon2 (64 MiB)
-	MaxMemory = 64 * 1024
+	MinMemory = crypto.MinArgonMemory
+	// MaxMemory is the maximum memory for Argon2 (512 MiB)
+	MaxMemory = crypto.MaxArgonMemory
 	// MinIterations is the minimum number of Argon2 iterations
-	MinIterations = 1
+	MinIterations = crypto.MinArgonIterations
 	// MaxIterations is the maximum number of Argon2 iterations
-	MaxIterations = 100
+	MaxIterations = crypto.MaxArgonIterations
 	// MinParallelism is the minimum Argon2 parallelism
-	MinParallelism = 1
+	MinParallelism = crypto.MinParallelism
 	// MaxParallelism is the maximum Argon2 parallelism
-	MaxParallelism = 4
+	MaxParallelism = crypto.MaxParallelism
 )
 
 // magicBytesSlice is a pre-allocated byte slice of MagicBytes to avoid
@@ -336,6 +336,9 @@ func (vf *VaultFile) Save(ctx context.Context, vault *secrets.Vault, password, k
 	vaultSize := vault.Size()
 	const tagSize = 16
 	totalSize := vaultSize + tagSize
+	if totalSize > MaxVaultSize {
+		return fmt.Errorf("%w: serialized size %d bytes", ErrVaultTooLarge, totalSize)
+	}
 
 	buf := memguard.NewBuffer(totalSize)
 	defer buf.Destroy()
@@ -555,14 +558,8 @@ func (vf *VaultFile) readHeader(file *os.File) error {
 	)
 
 	// Strict Parameter Validation
-	if vf.header.Argon2Params.Memory < MinMemory || vf.header.Argon2Params.Memory > MaxMemory {
-		return fmt.Errorf("%w: memory %d", ErrInvalidParam, vf.header.Argon2Params.Memory)
-	}
-	if vf.header.Argon2Params.Iterations < MinIterations || vf.header.Argon2Params.Iterations > MaxIterations {
-		return fmt.Errorf("%w: iterations %d", ErrInvalidParam, vf.header.Argon2Params.Iterations)
-	}
-	if vf.header.Argon2Params.Parallelism < MinParallelism || vf.header.Argon2Params.Parallelism > MaxParallelism {
-		return fmt.Errorf("%w: parallelism %d", ErrInvalidParam, vf.header.Argon2Params.Parallelism)
+	if err := crypto.ValidateArgon2Params(vf.header.Argon2Params); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidParam, err)
 	}
 	// Validate SaltSize and KeySize against the expected constants.
 	// An attacker supplying a forged vault header could trigger an OOM crash or
@@ -729,6 +726,10 @@ func (vf *VaultFile) writeSafeBackupCopy(src *os.File, tempPath string) error {
 
 	if err := dst.Sync(); err != nil {
 		return fmt.Errorf("failed to sync backup: %w", err)
+	}
+
+	if err := vf.RestrictPermissions(dst); err != nil {
+		return fmt.Errorf("failed to secure backup permissions: %w", err)
 	}
 
 	failed = false

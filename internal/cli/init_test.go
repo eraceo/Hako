@@ -1,13 +1,17 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/eraceo/Hako/internal/storage"
 )
 
 type initTestCase struct {
@@ -173,4 +177,88 @@ func TestInitCmd(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestInitCmd_ConfigAndValidation(t *testing.T) {
+	t.Run("Rejects excessive Argon2 memory before creating directories or config", func(t *testing.T) {
+		isolateCLIEnv(t, false)
+		subDir := filepath.Join(t.TempDir(), "nested_should_not_exist")
+		vaultPath := filepath.Join(subDir, "vault.hako")
+		customCfg := filepath.Join(t.TempDir(), "custom_cfg.yaml")
+
+		cmdArgs := []string{
+			"init",
+			"--argon-memory=1048576",
+			"--vault=" + vaultPath,
+			"--keyfile=none",
+			"--config=" + customCfg,
+		}
+		_, err := executeCommandWithMocks(t, cmdArgs, "VeryStrongMasterPass123!\nVeryStrongMasterPass123!\n")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "argon2 memory must be at most 524288 KiB")
+		assert.NoDirExists(t, subDir)
+		assert.NoFileExists(t, customCfg)
+	})
+
+	t.Run("Uses Argon2 defaults from config file when flags omitted", func(t *testing.T) {
+		isolateCLIEnv(t, false)
+		tmp := t.TempDir()
+		if runtime.GOOS != osWindows {
+			// #nosec G302 -- Tests require 0700 to pass vault directory security checks
+			require.NoError(t, os.Chmod(tmp, 0700))
+		}
+		cfgPath := filepath.Join(tmp, "cfg.yaml")
+		vaultPath := filepath.Join(tmp, "cfg_vault.hako")
+
+		yamlCfg := []byte("vault_path: \"" + filepath.ToSlash(vaultPath) + "\"\n" +
+			"keyfile_path: \"none\"\n" +
+			"argon2:\n  memory_kib: 2048\n  iterations: 2\n  parallelism: 2\n")
+		// #nosec G306 -- Test configuration file
+		require.NoError(t, os.WriteFile(cfgPath, yamlCfg, 0600))
+
+		cmdArgs := []string{"init", "--config=" + cfgPath, "--vault=" + vaultPath, "--keyfile=none"}
+		_, err := executeCommandWithMocks(t, cmdArgs, "VeryStrongMasterPass123!\nVeryStrongMasterPass123!\n")
+		require.NoError(t, err)
+
+		vf := storage.NewVaultFile(vaultPath)
+		v, loadErr := vf.Load(context.Background(), []byte("VeryStrongMasterPass123!"), nil)
+		require.NoError(t, loadErr)
+		defer v.Zero()
+
+		hdr := vf.Header()
+		assert.Equal(t, uint32(2048), hdr.Argon2Params.Memory)
+		assert.Equal(t, uint32(2), hdr.Argon2Params.Iterations)
+		assert.Equal(t, uint8(2), hdr.Argon2Params.Parallelism)
+	})
+
+	t.Run("Creates default config at custom --config path and honors --argon-parallelism", func(t *testing.T) {
+		isolateCLIEnv(t, false)
+		tmp := t.TempDir()
+		if runtime.GOOS != osWindows {
+			// #nosec G302 -- Tests require 0700 to pass vault directory security checks
+			require.NoError(t, os.Chmod(tmp, 0700))
+		}
+		customCfg := filepath.Join(tmp, "custom_sub", "hako.yaml")
+		vaultPath := filepath.Join(tmp, "p_vault.hako")
+
+		cmdArgs := []string{
+			"init",
+			"--config=" + customCfg,
+			"--vault=" + vaultPath,
+			"--keyfile=none",
+			"--argon-memory=1024",
+			"--argon-iter=1",
+			"--argon-parallelism=2",
+		}
+		_, err := executeCommandWithMocks(t, cmdArgs, "VeryStrongMasterPass123!\nVeryStrongMasterPass123!\n")
+		require.NoError(t, err)
+		assert.FileExists(t, customCfg)
+
+		vf := storage.NewVaultFile(vaultPath)
+		v, loadErr := vf.Load(context.Background(), []byte("VeryStrongMasterPass123!"), nil)
+		require.NoError(t, loadErr)
+		defer v.Zero()
+
+		assert.Equal(t, uint8(2), vf.Header().Argon2Params.Parallelism)
+	})
 }

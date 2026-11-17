@@ -25,6 +25,18 @@ const (
 	NonceSize = 12
 	// KeySize is the size of the derived encryption key (256 bits).
 	KeySize = 32
+	// MinArgonMemory is the minimum allowed Argon2id memory parameter in KiB (1 MiB).
+	MinArgonMemory = 1024
+	// MaxArgonMemory is the maximum allowed Argon2id memory parameter in KiB (512 MiB).
+	MaxArgonMemory = 512 * 1024
+	// MinArgonIterations is the minimum allowed Argon2id iteration count.
+	MinArgonIterations = 1
+	// MaxArgonIterations is the maximum allowed Argon2id iteration count.
+	MaxArgonIterations = 100
+	// MinParallelism is the minimum allowed Argon2id parallelism degree.
+	MinParallelism = 1
+	// MaxParallelism is the maximum allowed Argon2id parallelism degree.
+	MaxParallelism = 16
 
 	// KeyfileDerivationInfo is the HKDF info string for keyfile derivation.
 	KeyfileDerivationInfo = "hako-keyfile-v1"
@@ -41,6 +53,16 @@ var (
 	ErrInvalidNonceSize = errors.New("invalid nonce size")
 	// ErrBufferTooSmall indicates the destination buffer cannot hold the ciphertext and MAC tag.
 	ErrBufferTooSmall = errors.New("buffer capacity too small")
+	// ErrArgonMemoryOutOfRange indicates Argon2id memory lies outside [MinArgonMemory, MaxArgonMemory].
+	ErrArgonMemoryOutOfRange = errors.New("argon2 memory must be between 1024 and 524288 KiB")
+	// ErrArgonIterOutOfRange indicates Argon2id iterations lie outside [MinArgonIterations, MaxArgonIterations].
+	ErrArgonIterOutOfRange = errors.New("argon2 iterations must be between 1 and 100")
+	// ErrArgonParallelismOutOfRange indicates Argon2id parallelism lies outside [MinParallelism, MaxParallelism].
+	ErrArgonParallelismOutOfRange = errors.New("argon2 parallelism must be between 1 and 16")
+	// ErrInvalidSaltSizeParam indicates Argon2id salt size does not equal SaltSize.
+	ErrInvalidSaltSizeParam = errors.New("argon2 salt size must be 16 bytes")
+	// ErrInvalidKeySizeParam indicates Argon2id derived key size does not equal KeySize.
+	ErrInvalidKeySizeParam = errors.New("argon2 key size must be 32 bytes")
 )
 
 // Argon2Params contains parameters for Argon2id key derivation.
@@ -50,6 +72,26 @@ type Argon2Params struct {
 	Parallelism uint8  // Degree of parallelism
 	SaltSize    uint32 // Salt size in bytes
 	KeySize     uint32 // Derived key size in bytes
+}
+
+// ValidateArgon2Params verifies that p falls within safe cryptographic and DoS bounds.
+func ValidateArgon2Params(p Argon2Params) error {
+	if p.Memory < MinArgonMemory || p.Memory > MaxArgonMemory {
+		return ErrArgonMemoryOutOfRange
+	}
+	if p.Iterations < MinArgonIterations || p.Iterations > MaxArgonIterations {
+		return ErrArgonIterOutOfRange
+	}
+	if p.Parallelism < MinParallelism || p.Parallelism > MaxParallelism {
+		return ErrArgonParallelismOutOfRange
+	}
+	if p.SaltSize != SaltSize {
+		return ErrInvalidSaltSizeParam
+	}
+	if p.KeySize != KeySize {
+		return ErrInvalidKeySizeParam
+	}
+	return nil
 }
 
 // DefaultArgon2Params returns secure default parameters for Argon2id (OWASP Recommended).

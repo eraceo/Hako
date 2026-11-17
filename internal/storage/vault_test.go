@@ -244,18 +244,12 @@ func TestVaultFile_DoSProtection(t *testing.T) {
 	// Memory is uint32 (4 bytes) at offset 25
 	require.Greater(t, len(content), 30)
 
-	// Set Memory to 0x00100000 (1 MiB in LittleEndian is 00 00 10 00, wait... 1GB is huge)
-	// MaxMemory is 64*1024 = 65536 = 0x00010000
-	// Let's set it to 0x00100000 (1048576 = 1GB)
+	// Set Memory to 0x00100000 (1,048,576 KiB = 1 GiB > MaxMemory 512 MiB)
 	// Little Endian: 00 00 10 00
-	// Wait, 0x00100000 = 1,048,576
-	// 0x00010000 = 65,536 (Max)
-	// So 0x00020000 = 131,072 (Double max)
-	// Byte sequence for 0x00020000 LE: 00 00 02 00
 	offset := 25
 	content[offset] = 0x00
 	content[offset+1] = 0x00
-	content[offset+2] = 0x02 // 0x020000 = 131072 > 65536
+	content[offset+2] = 0x10 // 0x100000 = 1048576 > 524288
 	content[offset+3] = 0x00
 
 	err = os.WriteFile(vaultPath, content, 0600)
@@ -449,4 +443,37 @@ func TestVaultFile_Save_BackupFailureAbortsSave(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, originalBytes, currentBytes,
 		"The live vault must be untouched when the backup step fails")
+}
+
+func TestVaultFile_SaveExceedsMaxVaultSize(t *testing.T) {
+	tmpDir := prepareSecureTempDir(t)
+	vaultPath := filepath.Join(tmpDir, "oversized_vault.bin")
+	vf := NewVaultFile(vaultPath)
+
+	password := []byte("password123")
+	defer crypto.SecureZero(password)
+	params := fastTestArgon2Params()
+
+	require.NoError(t, vf.Initialize(context.Background(), password, nil, params))
+
+	// Construct a vault whose serialized metadata size exceeds MaxVaultSize (64 MiB).
+	oversizedVault := secrets.NewVault()
+	bigNotes := make([]byte, secrets.MaxNotesLength)
+	for i := range bigNotes {
+		bigNotes[i] = 'a'
+	}
+	entry, err := secrets.NewEntry("huge", []byte("u"), []byte("password1234"), nil, bigNotes, nil)
+	require.NoError(t, err)
+	defer entry.Zero()
+
+	entrySize := entry.Size()
+	needed := (MaxVaultSize / entrySize) + 1
+	oversizedVault.Entries = make([]*secrets.Entry, needed)
+	for i := range oversizedVault.Entries {
+		oversizedVault.Entries[i] = entry
+	}
+
+	err = vf.Save(context.Background(), oversizedVault, password, nil)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrVaultTooLarge)
 }

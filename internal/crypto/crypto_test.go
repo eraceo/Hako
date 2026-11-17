@@ -274,3 +274,54 @@ func TestGenerateRandomBytes(t *testing.T) {
 
 	assert.NotEqual(t, bytes1, bytes2, "Generated random bytes must be unique")
 }
+
+func TestValidateArgon2Params(t *testing.T) {
+	t.Parallel()
+
+	valid := DefaultArgon2Params()
+	require.NoError(t, ValidateArgon2Params(valid))
+
+	// Minimum and maximum boundary values must succeed.
+	minParams := Argon2Params{
+		Memory:      MinArgonMemory,
+		Iterations:  MinArgonIterations,
+		Parallelism: MinParallelism,
+		SaltSize:    SaltSize,
+		KeySize:     KeySize,
+	}
+	require.NoError(t, ValidateArgon2Params(minParams))
+
+	maxParams := Argon2Params{
+		Memory:      MaxArgonMemory,
+		Iterations:  MaxArgonIterations,
+		Parallelism: MaxParallelism,
+		SaltSize:    SaltSize,
+		KeySize:     KeySize,
+	}
+	require.NoError(t, ValidateArgon2Params(maxParams))
+
+	tests := []struct {
+		name    string
+		mutate  func(*Argon2Params)
+		wantErr error
+	}{
+		{name: "memory below min", mutate: func(p *Argon2Params) { p.Memory = MinArgonMemory - 1 }, wantErr: ErrArgonMemoryOutOfRange},
+		{name: "memory above max", mutate: func(p *Argon2Params) { p.Memory = MaxArgonMemory + 1 }, wantErr: ErrArgonMemoryOutOfRange},
+		{name: "iterations below min", mutate: func(p *Argon2Params) { p.Iterations = MinArgonIterations - 1 }, wantErr: ErrArgonIterOutOfRange},
+		{name: "iterations above max", mutate: func(p *Argon2Params) { p.Iterations = MaxArgonIterations + 1 }, wantErr: ErrArgonIterOutOfRange},
+		{name: "parallelism below min", mutate: func(p *Argon2Params) { p.Parallelism = 0 }, wantErr: ErrArgonParallelismOutOfRange},
+		{name: "parallelism above max", mutate: func(p *Argon2Params) { p.Parallelism = MaxParallelism + 1 }, wantErr: ErrArgonParallelismOutOfRange},
+		{name: "invalid salt size", mutate: func(p *Argon2Params) { p.SaltSize = SaltSize - 1 }, wantErr: ErrInvalidSaltSizeParam},
+		{name: "invalid key size", mutate: func(p *Argon2Params) { p.KeySize = KeySize + 1 }, wantErr: ErrInvalidKeySizeParam},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			p := DefaultArgon2Params()
+			tc.mutate(&p)
+			err := ValidateArgon2Params(p)
+			require.ErrorIs(t, err, tc.wantErr)
+		})
+	}
+}

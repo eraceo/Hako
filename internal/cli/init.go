@@ -20,16 +20,18 @@ import (
 
 // Sentinel errors to prevent dynamic error generation (err113).
 var (
-	ErrVaultExists       = errors.New("vault already exists")
-	ErrArgonMemoryTooLow = errors.New("argon2 memory must be at least 1024 KiB")
-	ErrArgonIterTooLow   = errors.New("argon2 iterations must be at least 1")
-	ErrKeyfileExists     = errors.New("keyfile already exists (aborting to prevent overwrite)")
+	ErrVaultExists             = errors.New("vault already exists")
+	ErrArgonMemoryTooLow       = errors.New("argon2 memory must be at least 1024 KiB")
+	ErrArgonMemoryTooHigh      = errors.New("argon2 memory must be at most 524288 KiB")
+	ErrArgonIterTooLow         = errors.New("argon2 iterations must be at least 1")
+	ErrArgonIterTooHigh        = errors.New("argon2 iterations must be at most 100")
+	ErrArgonParallelismInvalid = errors.New("argon2 parallelism must be between 1 and 16")
+	ErrKeyfileExists           = errors.New("keyfile already exists (aborting to prevent overwrite)")
 )
 
 type initOptions struct {
 	GenerateKeyfile bool
-	ArgonMemory     uint32
-	ArgonIter       uint32
+	Params          crypto.Argon2Params
 }
 
 // NewInitCmd creates and returns the init command.
@@ -47,34 +49,85 @@ Optionally, it can generate a keyfile for additional security.`,
 	cmd.Flags().Bool("gen-keyfile", false, "generate a keyfile for additional security")
 	cmd.Flags().Bool("generate-keyfile", false, "alias for --gen-keyfile")
 	cmd.Flags().Uint32("argon-memory", 65536, "Argon2 memory parameter in KiB (default: 64MB)")
-	cmd.Flags().Uint32("argon-iter", 3, "Argon2 iterations parameter")
+	cmd.Flags().Uint32("argon-iter", 4, "Argon2 iterations parameter")
+	cmd.Flags().Uint8("argon-parallelism", 4, "Argon2 degree of parallelism (threads)")
 
 	return cmd
+}
+
+func resolveInitArgon2Params(cmd *cobra.Command, cfg *config.Config) crypto.Argon2Params {
+	params := crypto.Argon2Params{
+		Memory:      cfg.Argon2.MemoryKiB,
+		Iterations:  cfg.Argon2.Iterations,
+		Parallelism: cfg.Argon2.Parallelism,
+		SaltSize:    crypto.SaltSize,
+		KeySize:     crypto.KeySize,
+	}
+	if cmd.Flags().Changed("argon-memory") {
+		params.Memory, _ = cmd.Flags().GetUint32("argon-memory")
+	}
+	if cmd.Flags().Changed("argon-iter") {
+		params.Iterations, _ = cmd.Flags().GetUint32("argon-iter")
+	}
+	if cmd.Flags().Changed("argon-parallelism") {
+		params.Parallelism, _ = cmd.Flags().GetUint8("argon-parallelism")
+	}
+	return params
+}
+
+func validateInitArgon2Params(params crypto.Argon2Params) error {
+	err := crypto.ValidateArgon2Params(params)
+	if err == nil {
+		return nil
+	}
+	switch {
+	case errors.Is(err, crypto.ErrArgonMemoryOutOfRange):
+		if params.Memory < crypto.MinArgonMemory {
+			return fmt.Errorf("%w: got %d KiB", ErrArgonMemoryTooLow, params.Memory)
+		}
+		return fmt.Errorf("%w: got %d KiB", ErrArgonMemoryTooHigh, params.Memory)
+	case errors.Is(err, crypto.ErrArgonIterOutOfRange):
+		if params.Iterations < crypto.MinArgonIterations {
+			return fmt.Errorf("%w: got %d", ErrArgonIterTooLow, params.Iterations)
+		}
+		return fmt.Errorf("%w: got %d", ErrArgonIterTooHigh, params.Iterations)
+	case errors.Is(err, crypto.ErrArgonParallelismOutOfRange):
+		return fmt.Errorf("%w: got %d", ErrArgonParallelismInvalid, params.Parallelism)
+	default:
+		return err
+	}
 }
 
 func runInit(cmd *cobra.Command, _ []string) error {
 	genKeyfile, _ := cmd.Flags().GetBool("gen-keyfile")
 	generateKeyfile, _ := cmd.Flags().GetBool("generate-keyfile")
-	argonMem, _ := cmd.Flags().GetUint32("argon-memory")
-	argonIter, _ := cmd.Flags().GetUint32("argon-iter")
+	configPath, _ := cmd.Flags().GetString("config")
+
+	cfg := config.FromContext(cmd.Context())
+	params := resolveInitArgon2Params(cmd, cfg)
+	if err := validateInitArgon2Params(params); err != nil {
+		audit.LogFailure(audit.EventSecurityError, "Invalid Argon2 parameters specified for init", map[string]interface{}{
+			"error": err.Error(),
+		})
+		ui.PrintfErrorf("Initialization failed: %v", err)
+		return err
+	}
 
 	opts := initOptions{
 		GenerateKeyfile: genKeyfile || generateKeyfile,
-		ArgonMemory:     argonMem,
-		ArgonIter:       argonIter,
+		Params:          params,
 	}
-
-	cfg := config.FromContext(cmd.Context())
 
 	// Prepare audit context
 	auditDetails := map[string]interface{}{
-		"vault_path":   cfg.VaultPath,
-		"gen_keyfile":  opts.GenerateKeyfile,
-		"argon_memory": opts.ArgonMemory,
-		"argon_iter":   opts.ArgonIter,
+		"vault_path":        cfg.VaultPath,
+		"gen_keyfile":       opts.GenerateKeyfile,
+		"argon_memory":      opts.Params.Memory,
+		"argon_iter":        opts.Params.Iterations,
+		"argon_parallelism": opts.Params.Parallelism,
 	}
 
-	vaultFile, err := checkInitialState(cfg)
+	vaultFile, err := checkInitialState(cfg, configPath)
 	if err != nil {
 		audit.LogFailure(audit.EventVaultInit, "Initialization pre-check failed", map[string]interface{}{
 			"error":      err.Error(),
@@ -126,7 +179,7 @@ func runInit(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-func checkInitialState(cfg *config.Config) (*storage.VaultFile, error) {
+func checkInitialState(cfg *config.Config, configPath string) (*storage.VaultFile, error) {
 	vaultFile := storage.NewVaultFile(cfg.VaultPath)
 	if vaultFile.Exists() {
 		return nil, fmt.Errorf("%w: %s", ErrVaultExists, ui.SanitizeString(cfg.VaultPath))
@@ -136,7 +189,7 @@ func checkInitialState(cfg *config.Config) (*storage.VaultFile, error) {
 		return nil, fmt.Errorf("failed to create directories: %w", err)
 	}
 
-	if err := config.CreateDefaultConfigFile(); err != nil {
+	if err := config.CreateDefaultConfigFileAt(configPath); err != nil {
 		return nil, fmt.Errorf("failed to create default config file: %w", err)
 	}
 
@@ -188,24 +241,13 @@ func initializeVaultCore(
 	keyfile []byte,
 	opts initOptions,
 ) error {
-	if opts.ArgonMemory < 1024 {
-		return ErrArgonMemoryTooLow
-	}
-	if opts.ArgonIter < 1 {
-		return ErrArgonIterTooLow
-	}
-
-	params := crypto.Argon2Params{
-		Memory:      opts.ArgonMemory,
-		Iterations:  opts.ArgonIter,
-		Parallelism: 2,
-		SaltSize:    crypto.SaltSize,
-		KeySize:     crypto.KeySize,
+	if err := validateInitArgon2Params(opts.Params); err != nil {
+		return err
 	}
 
 	var initErr error
 	err := securePassword.WithPassword(func(passwordBytes []byte) error {
-		initErr = vaultFile.Initialize(ctx, passwordBytes, keyfile, params)
+		initErr = vaultFile.Initialize(ctx, passwordBytes, keyfile, opts.Params)
 		return nil
 	})
 

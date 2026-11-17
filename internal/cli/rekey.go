@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -8,7 +9,6 @@ import (
 	"github.com/eraceo/Hako/internal/audit"
 	"github.com/eraceo/Hako/internal/config"
 	"github.com/eraceo/Hako/internal/crypto"
-	"github.com/eraceo/Hako/internal/storage"
 	"github.com/eraceo/Hako/internal/ui"
 )
 
@@ -44,16 +44,23 @@ from CLI flags or from active configuration file (~/.config/hako/config.yaml).`,
 }
 
 func validateArgon2Params(params crypto.Argon2Params) error {
-	if params.Memory < storage.MinMemory || params.Memory > storage.MaxMemory {
-		return fmt.Errorf("invalid memory setting: %d KiB (must be between %d and %d KiB)", params.Memory, storage.MinMemory, storage.MaxMemory)
+	err := crypto.ValidateArgon2Params(params)
+	if err == nil {
+		return nil
 	}
-	if params.Iterations < storage.MinIterations || params.Iterations > storage.MaxIterations {
-		return fmt.Errorf("invalid iterations setting: %d (must be between %d and %d)", params.Iterations, storage.MinIterations, storage.MaxIterations)
+	switch {
+	case errors.Is(err, crypto.ErrArgonMemoryOutOfRange):
+		return fmt.Errorf("invalid memory setting: %d KiB (must be between %d and %d KiB): %w",
+			params.Memory, crypto.MinArgonMemory, crypto.MaxArgonMemory, err)
+	case errors.Is(err, crypto.ErrArgonIterOutOfRange):
+		return fmt.Errorf("invalid iterations setting: %d (must be between %d and %d): %w",
+			params.Iterations, crypto.MinArgonIterations, crypto.MaxArgonIterations, err)
+	case errors.Is(err, crypto.ErrArgonParallelismOutOfRange):
+		return fmt.Errorf("invalid parallelism setting: %d (must be between %d and %d): %w",
+			params.Parallelism, crypto.MinParallelism, crypto.MaxParallelism, err)
+	default:
+		return err
 	}
-	if params.Parallelism < storage.MinParallelism || params.Parallelism > storage.MaxParallelism {
-		return fmt.Errorf("invalid parallelism setting: %d (must be between %d and %d)", params.Parallelism, storage.MinParallelism, storage.MaxParallelism)
-	}
-	return nil
 }
 
 func formatChange(oldVal, newVal interface{}) string {
@@ -69,9 +76,6 @@ func runRekey(cmd *cobra.Command, opts *rekeyOptions) error {
 	// 1. Authenticate & load vault
 	vault, vaultFile, password, err := loadVault(cmd.Context(), cfg)
 	if err != nil {
-		audit.LogFailure(audit.EventAuthFailure, "Failed to authenticate for rekey", map[string]interface{}{
-			"error": err.Error(),
-		})
 		return err
 	}
 	defer func() {
@@ -94,13 +98,13 @@ func runRekey(cmd *cobra.Command, opts *rekeyOptions) error {
 			KeySize:     crypto.KeySize,
 		}
 	}
-	if opts.memory > 0 {
+	if cmd.Flags().Changed("memory") {
 		newParams.Memory = opts.memory
 	}
-	if opts.iterations > 0 {
+	if cmd.Flags().Changed("iterations") {
 		newParams.Iterations = opts.iterations
 	}
-	if opts.parallelism > 0 {
+	if cmd.Flags().Changed("parallelism") {
 		newParams.Parallelism = opts.parallelism
 	}
 
