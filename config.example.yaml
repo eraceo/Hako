@@ -41,7 +41,7 @@ clipboard:
   # List of clipboard tools to try, in order of preference.
   # Linux: ["wl-copy", "xclip", "xsel"]
   # macOS: ["pbcopy"]
-  # Windows: ["clip"]
+  # Windows: ["win32api", "clip"]
   tool_preference: ["wl-copy", "xclip", "xsel"]
   
   # Time in seconds before clearing the clipboard automatically.

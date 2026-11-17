@@ -10,7 +10,7 @@ Push-Location $ProjectRoot
 
 # Check for Go
 if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
-    Write-Error "Go is not installed. Please install Go 1.25+ first."
+    Write-Error "Go is not installed. Please install Go 1.26+ first."
 }
 
 # Ensure dependencies are tidy

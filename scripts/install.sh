@@ -17,7 +17,7 @@ BINARY_NAME="hako"
 INSTALL_DIR="/usr/local/bin"
 CONFIG_DIR="$HOME/.config/hako"
 DATA_DIR="$HOME/.local/share/hako"
-MIN_GO_VERSION="1.25"   
+MIN_GO_VERSION="1.26"
 
 # Functions
 print_info() { echo -e "${BLUE}ℹ${NC} $1"; }
@@ -247,7 +247,7 @@ main() {
     print_success "Hako installation completed successfully!"
     echo
     print_info "Next steps:"
-    echo "  1. Initialize your vault: hako init --keyfile"
+    echo "  1. Initialize your vault: hako init --gen-keyfile"
     echo "  2. Add a password:        hako add example --generate"
     echo "  3. Get a password:        hako get example --clip"
     echo

@@ -57,10 +57,21 @@ hako generate --clip      # Generate and copy to clipboard
 ## Configuration
 Settings live in `~/.config/hako/config.yaml`. 
 
-You can adjust the Argon2 difficulty here. If Hako feels slow when unlocking, try lowering `iterations` or `memory_kib`. If you want more security and have the RAM to spare, turn them up.
+You can adjust the Argon2id difficulty here (`memory_kib` between `1024` KiB and `524288` KiB / 512 MiB, `iterations` between `1` and `100`, `parallelism` between `1` and `16`). If Hako feels slow when unlocking, try lowering `iterations` or `memory_kib`. If you want more security and have the RAM to spare, turn them up.
+
+> **Memory note with keyfiles:** Using `--gen-keyfile` / a keyfile runs two Argon2id derivations in parallel (`password` and `keyfile`), so peak RAM usage is **2× `memory_kib`** (e.g., 128 MiB of RAM at the default 64 MiB setting, or up to 1 GiB at the 512 MiB maximum).
+
+After changing Argon2id settings in `config.yaml`, re-encrypt an existing vault to apply them:
+```bash
+hako rekey --apply-config
+```
 
 ```yaml
 vault_path: "~/.local/share/hako/vault.bin"
+argon2:
+  memory_kib: 65536
+  iterations: 4
+  parallelism: 4
 clipboard:
   timeout: 15
 ```
