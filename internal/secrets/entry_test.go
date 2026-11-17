@@ -275,6 +275,33 @@ func TestContainsBytes(t *testing.T) {
 	}
 }
 
+func TestContainsBytes_UnicodeZeroAlloc(t *testing.T) {
+	tests := []struct {
+		name     string
+		data     []byte
+		patLower string
+		expected bool
+	}{
+		{name: "accented uppercase in data", data: []byte("Mon CAFÉ Secret"), patLower: "café", expected: true},
+		{name: "cyrillic case fold", data: []byte("ПРИВЕТ"), patLower: "привет", expected: true},
+		// U+023A (Ⱥ, 2 UTF-8 bytes) folds to U+2C65 (ⱥ, 3 UTF-8 bytes), verifying no byte-length pre-reject bug.
+		{name: "utf8 byte length expands on lowercase", data: []byte("Ⱥ"), patLower: "ⱥ", expected: true},
+		{name: "unicode mismatch", data: []byte("Café"), patLower: "thé", expected: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, containsBytes(tc.data, tc.patLower))
+		})
+	}
+
+	data := []byte("Mon CAFÉ Secret")
+	allocs := testing.AllocsPerRun(100, func() {
+		_ = containsBytes(data, "café")
+	})
+	assert.Zero(t, allocs, "containsBytes must perform zero heap allocations")
+}
+
 func TestVault_Zero(t *testing.T) {
 	t.Parallel()
 
@@ -332,4 +359,26 @@ func TestEphemeralSecret_CorruptedBounds(t *testing.T) {
 			assert.ErrorIs(t, err, ErrCorruptedSecret, "Size %d should return ErrCorruptedSecret", size)
 		}
 	}
+}
+
+func TestVault_MarshalUnmarshal_SkipsNilEntries(t *testing.T) {
+	t.Parallel()
+
+	e1, err := NewEntry("alpha", []byte("user"), []byte("pass12345678"), nil, nil, nil)
+	require.NoError(t, err)
+	defer e1.Zero()
+
+	v := &Vault{Entries: []*Entry{nil, e1, nil}}
+
+	buf := make([]byte, v.Size())
+	enc := hakoBinary.NewEncoder(buf)
+	require.NoError(t, v.MarshalBinary(enc))
+
+	dec := hakoBinary.NewDecoder(buf)
+	var got Vault
+	require.NoError(t, got.UnmarshalBinary(dec))
+	defer got.Zero()
+
+	require.Len(t, got.Entries, 1)
+	assert.Equal(t, "alpha", got.Entries[0].Name)
 }

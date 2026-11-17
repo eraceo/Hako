@@ -147,10 +147,28 @@ func computePoolSize(lower, upper, digit, symbol, space, other, rawErr bool) int
 	if other {
 		poolSize += 128
 	}
-	if rawErr || poolSize == 0 {
+	if poolSize == 0 {
 		poolSize = 256
+	} else if rawErr {
+		poolSize += 128
 	}
 	return poolSize
+}
+
+// FormatStrengthLabel returns a human-readable graduated strength label for a bit entropy value.
+func FormatStrengthLabel(entropyVal float64) string {
+	switch {
+	case entropyVal >= 128:
+		return "Very Strong"
+	case entropyVal >= StrongEntropy:
+		return "Strong"
+	case entropyVal >= 60:
+		return "Good"
+	case entropyVal >= 40:
+		return "Fair"
+	default:
+		return "Weak"
+	}
 }
 
 // EvaluateStrength categorizes a raw entropy float value into a standard PasswordStrength enum.

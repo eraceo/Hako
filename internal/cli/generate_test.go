@@ -5,6 +5,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/eraceo/Hako/internal/entropy"
 )
 
 type generateTestCase struct {
@@ -61,6 +63,23 @@ func getGenerateCmdTestCases() []generateTestCase {
 			name:          "Fails on too long length",
 			args:          []string{"gen", "--length=200"},
 			expectedError: "password length cannot exceed 128",
+		},
+		{
+			name: "Generate memorable password with custom valid word count",
+			args: []string{"gen", "--memorable", "--length=4"},
+			expectedContains: []string{
+				"Password strength:",
+			},
+		},
+		{
+			name:          "Fails when memorable length exceeds 10 words",
+			args:          []string{"gen", "--memorable", "--length=11"},
+			expectedError: "memorable password word count must be between 3 and 10",
+		},
+		{
+			name:          "Fails when memorable length below 3 words",
+			args:          []string{"gen", "--memorable", "--length=2"},
+			expectedError: "memorable password word count must be between 3 and 10",
 		},
 	}
 }
@@ -120,33 +139,33 @@ func TestCalculateEntropy(t *testing.T) {
 			maxExpected: 27.0,
 		},
 		{
-			name:     "Lower case only (26^8)",
+			name:     "Lower case only (26^8 with repetition penalty)",
 			password: []byte("password"),
-			// Pool = 26, Length = 8 -> 8 * log2(26) ≈ 37.6
-			minExpected: 37.0,
-			maxExpected: 38.0,
+			// EffectiveLength = (8+7)/2 = 7.5, Pool = 26 -> 7.5 * log2(26) ≈ 35.25
+			minExpected: 35.0,
+			maxExpected: 35.5,
 		},
 		{
-			name:     "Mixed complex (95^16)",
+			name:     "Mixed complex (94^16 with repetition penalty)",
 			password: []byte("P@ssw0rd_Secur3!"),
-			// Pool = 95 (26+26+10+33), Length = 16 -> 16 * log2(95) ≈ 105.1
-			minExpected: 105.0,
-			maxExpected: 106.0,
+			// EffectiveLength = (16+14)/2 = 15, Pool = 94 -> 15 * log2(94) ≈ 98.32
+			minExpected: 98.0,
+			maxExpected: 98.7,
 		},
 		{
 			name:     "Unicode password",
 			password: []byte("🔒MotDePasse123!"),
-			// Includes Unicode so pool > 95, length is 15 runes
-			minExpected: 100.0,
-			maxExpected: 150.0,
+			// Adjusted entropy with repetition penalty ≈ 91.77
+			minExpected: 91.0,
+			maxExpected: 92.5,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			entropy := calculateEntropy(tt.password)
-			assert.GreaterOrEqual(t, entropy, tt.minExpected)
-			assert.LessOrEqual(t, entropy, tt.maxExpected)
+			entropyBits := entropy.Calculate(tt.password)
+			assert.GreaterOrEqual(t, entropyBits, tt.minExpected)
+			assert.LessOrEqual(t, entropyBits, tt.maxExpected)
 		})
 	}
 }

@@ -62,6 +62,8 @@ You can update individual fields using flags or be prompted interactively.`,
 	cmd.Flags().Bool("memorable", false, "generate memorable password")
 	cmd.Flags().Bool("no-similar", false, "exclude similar characters in generated password")
 
+	cmd.MarkFlagsMutuallyExclusive("symbols", "no-symbols")
+
 	return cmd
 }
 
@@ -167,6 +169,10 @@ func parseEditFlags(cmd *cobra.Command, nameOrID string) (editOptions, error) {
 	}
 	if opts.NoSimilar, err = cmd.Flags().GetBool("no-similar"); err != nil {
 		return opts, fmt.Errorf("failed to parse no-similar flag: %w", err)
+	}
+
+	if err := validateOrphanGenerateFlags(cmd, opts.Generate); err != nil {
+		return opts, err
 	}
 
 	anyFlagChanged := cmd.Flags().Changed("user") ||
@@ -344,15 +350,16 @@ func updatePassword(cmd *cobra.Command, entry *secrets.Entry, opts editOptions) 
 	}
 
 	if cmd.Flags().Changed("generate") && opts.Generate {
-		passLen := opts.PassLength
-		if passLen < 1 {
-			passLen = 16
-		}
-		genOpts := secrets.GeneratorOptions{
-			Length:     passLen,
-			UseSymbols: opts.Symbols && !opts.NoSymbols,
-			Memorable:  opts.Memorable,
-			NoSimilar:  opts.NoSimilar,
+		genOpts, err := prepareGenerateOptions(
+			cmd,
+			opts.PassLength,
+			opts.Symbols,
+			opts.NoSymbols,
+			opts.Memorable,
+			opts.NoSimilar,
+		)
+		if err != nil {
+			return err
 		}
 		generated, err := secrets.GeneratePassword(genOpts)
 		if err != nil {
@@ -475,23 +482,30 @@ func updateTags(cmd *cobra.Command, entry *secrets.Entry, opts editOptions) erro
 		}
 
 		if len(clean) > 0 {
-			rawTags := strings.Split(string(clean), ",")
-			var cleanTags []string
-			for _, t := range rawTags {
-				t = strings.TrimSpace(t)
-				if t != "" {
-					cleanTags = append(cleanTags, t)
-				}
-			}
-			entry.Tags = cleanTags
+			entry.Tags = sanitizeTags(strings.Split(string(clean), ","))
 		}
 		return nil
 	}
 
 	if cmd.Flags().Changed("tags") {
-		entry.Tags = opts.Tags
+		entry.Tags = sanitizeTags(opts.Tags)
 	}
 	return nil
+}
+
+var tagControlReplacer = strings.NewReplacer("\r", "", "\n", "", "\t", "")
+
+// sanitizeTags cleans control characters, ANSI escapes, and empty items from entry tags.
+func sanitizeTags(tags []string) []string {
+	var clean []string
+	for _, t := range tags {
+		cleaned := strings.TrimSpace(ui.SanitizeString(t))
+		cleaned = strings.TrimSpace(tagControlReplacer.Replace(cleaned))
+		if cleaned != "" {
+			clean = append(clean, cleaned)
+		}
+	}
+	return clean
 }
 
 // validateUpdatedEntry extracts the current entry data safely and passes it to the strict validator.

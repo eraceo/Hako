@@ -7,7 +7,7 @@ This document outlines the guidelines and processes for contributing to the Hako
 ### Prerequisites
 
 Ensure the following tools are installed in your development environment:
-- Go 1.25 or higher
+- Go 1.26 or higher
 - Git
 - Make (recommended for automation)
 

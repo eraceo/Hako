@@ -149,7 +149,7 @@ const (
 		"pulse,pumpkin,punch,pupil,puppy,purchase,pure,purple,purpose,purse,push,put," +
 		"puzzle,pyramid,quality,quantum,quarter,question,quick,quit,quiz,quote,rabbit," +
 		"raccoon,race,rack,radar,radio,rail,rain,raise,rally,ramp,ranch,random,range," +
-		"rapid,rare,rate,rather,raven,raw,razor,ready,reality,reason,rebel,build,recall," +
+		"rapid,rare,rate,rather,raven,raw,razor,ready,reality,reason,rebel,rebuild,recall," +
 		"receive,recipe,record,recycle,reduce,reflect,reform,refuse,region,regret," +
 		"regular,reject,relax,release,relief,rely,remain,remember,remind,remote,remove," +
 		"render,renew,rent,reopen,repair,repeat,replace,reply,report,request,require," +
@@ -471,6 +471,9 @@ func (opts GeneratorOptions) CalculateEntropy() float64 {
 		if numWords < 3 {
 			numWords = 3
 		}
+		if numWords > 10 {
+			numWords = 10
+		}
 
 		extrasEntropy := 6.64 // 2 digits
 		if opts.UseSymbols {
@@ -491,7 +494,11 @@ func (opts GeneratorOptions) CalculateEntropy() float64 {
 	}
 
 	if opts.NoSimilar {
-		poolSize -= 6
+		if opts.UseSymbols {
+			poolSize -= 6 // 0, O, 1, l, I, |
+		} else {
+			poolSize -= 5 // 0, O, 1, l, I ('|' belongs only to Symbols)
+		}
 	}
 
 	if poolSize <= 0 {

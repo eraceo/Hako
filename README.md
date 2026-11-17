@@ -14,7 +14,7 @@ Hako is a fast, local-first password manager for the terminal. It’s built to b
 ## Installation
 
 ### Requirements
-- **Go 1.24+**
+- **Go 1.26+**
 - **Clipboard helper** (for `--clip` support): `wl-copy`/`xclip` (Linux), `pbcopy` (macOS), or `clip.exe` (Windows).
 
 ### Build & Install

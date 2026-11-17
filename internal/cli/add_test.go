@@ -136,6 +136,11 @@ func getAddCmdTestCases(testMasterPass string) []addTestCase {
 			simulatedInput: dummyEntryInputs + testMasterPass + "\n",
 			expectedError:  "vault file not found",
 		},
+		{
+			name:          "Fails on orphan generation flag without --generate",
+			args:          []string{"add", "orphanEntry", "--memorable"},
+			expectedError: "generation flags require --generate",
+		},
 	}
 }
 
