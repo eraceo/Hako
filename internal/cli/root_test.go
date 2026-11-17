@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -71,8 +70,7 @@ func TestRootCmd_InitConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Clean global state that might persist in Viper or Config package
-			viper.Reset()
+			isolateCLIEnv(t, false)
 
 			if tt.setupViper != nil {
 				tt.setupViper()

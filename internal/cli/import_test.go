@@ -6,7 +6,6 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -107,10 +106,7 @@ CSV_Entry,csv_user,csv_password123,http://csv.com`)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Isolate Viper
-			viper.Reset()
-			viper.Set("argon2_iterations", 1) // Fast crypto for tests
-			viper.Set("argon2_memory", 1024)
+			isolateCLIEnv(t, true)
 
 			// Construct Args: command + file + flags + global flags
 			cmdArgs := []string{"import"}

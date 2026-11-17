@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -143,15 +142,10 @@ func TestEditCmd(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Clean Environment
-			viper.Reset()
+			isolateCLIEnv(t, true)
 
 			vaultName := "edit_vault_" + strings.ReplaceAll(tt.name, " ", "_") + ".hako"
 			testVaultPath := filepath.Clean(filepath.Join(tempDir, vaultName))
-
-			viper.Set("argon2_iterations", 1)
-			viper.Set("argon2_memory", 1024)
-			viper.Set("argon2_parallelism", 1)
 
 			// Setup Vault State using the shared helper (Fixes DUPL)
 			// This creates "targetEntry" with "oldUser", "OldPassword123!", etc.

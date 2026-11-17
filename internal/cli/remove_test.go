@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -71,15 +70,10 @@ func TestRemoveCmd(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			viper.Reset()
+			isolateCLIEnv(t, true)
 
 			vaultName := "vault_" + strings.ReplaceAll(tt.name, " ", "_") + ".hako"
 			testVaultPath := filepath.Clean(filepath.Join(tempDir, vaultName))
-
-			// Use fast crypto parameters for tests to prevent timeouts
-			viper.Set("argon2_iterations", 1)
-			viper.Set("argon2_memory", 1024)
-			viper.Set("argon2_parallelism", 1)
 
 			if len(tt.setupEntries) > 0 {
 				setupTestVault(t, testVaultPath, "masterpass123", tt.setupEntries)

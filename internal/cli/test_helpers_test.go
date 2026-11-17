@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -38,15 +37,7 @@ type TestCase struct {
 // resets, isolated environments, and mock strictness.
 func RunCLICommandTest(t *testing.T, tt TestCase) {
 	t.Run(tt.Name, func(t *testing.T) {
-		// Clean Environment
-		viper.Reset()
-
-		// Fast crypto parameters to speed up tests significantly and avoid CI timeouts
-		viper.Set("argon2_iterations", 1)
-		viper.Set("argon2_memory", 1024)
-		viper.Set("argon2_parallelism", 1)
-
-		// Setup Vault State in an isolated temporary directory
+		isolateCLIEnv(t, true)
 
 		// file locking (flock) often hangs or fails in some containerized envs.
 		if runtime.GOOS == "linux" && os.Getenv("WSL_DISTRO_NAME") != "" {
@@ -98,10 +89,63 @@ func RunCLICommandTest(t *testing.T, tt TestCase) {
 	})
 }
 
+// isolateCLIEnv sandboxes HOME, XDG/Windows user config/data directories, and audit logs
+// into t.TempDir(). When writeFastConfig is true, it writes a minimal config.yaml with low
+// Argon2id parameters (1024 KiB, 1 iter, 1 thread) so CLI tests never read host state
+// or run slow 64 MiB key derivations unless explicitly configured otherwise.
+func isolateCLIEnv(t *testing.T, writeFastConfig bool) {
+	t.Helper()
+
+	rootDir := t.TempDir()
+	homeDir := filepath.Join(rootDir, "home")
+	cfgHome := filepath.Join(rootDir, "config")
+	dataHome := filepath.Join(rootDir, "data")
+	hakoCfgDir := filepath.Join(cfgHome, "hako")
+	hakoDataDir := filepath.Join(dataHome, "hako")
+
+	for _, dir := range []string{homeDir, cfgHome, dataHome, hakoCfgDir, hakoDataDir} {
+		require.NoError(t, os.MkdirAll(dir, 0700))
+		if runtime.GOOS != osWindows {
+			// #nosec G302 -- Tests require 0700 to pass internal security audits
+			require.NoError(t, os.Chmod(dir, 0700))
+		}
+	}
+
+	auditPath := filepath.Join(hakoDataDir, "audit.log")
+	t.Setenv("HOME", homeDir)
+	t.Setenv("XDG_CONFIG_HOME", cfgHome)
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	t.Setenv("APPDATA", cfgHome)
+	t.Setenv("LOCALAPPDATA", dataHome)
+	t.Setenv("HAKO_AUDIT_LOG_PATH", auditPath)
+	t.Setenv("HAKO_VAULT_PATH", "")
+	t.Setenv("HAKO_KEYFILE_PATH", "")
+	t.Setenv("HAKO_ARGON2_MEMORY_KIB", "")
+	t.Setenv("HAKO_ARGON2_ITERATIONS", "")
+	t.Setenv("HAKO_ARGON2_PARALLELISM", "")
+	t.Setenv("HAKO_CLIPBOARD_TOOL", "")
+	t.Setenv("HAKO_TEST_ISOLATED", "1")
+
+	configPath := filepath.Join(hakoCfgDir, "config.yaml")
+	if writeFastConfig {
+		defaultVault := filepath.ToSlash(filepath.Join(hakoDataDir, "vault.hako"))
+		yamlData := []byte("vault_path: \"" + defaultVault + "\"\n" +
+			"keyfile_path: \"none\"\n" +
+			"audit_log_path: \"" + filepath.ToSlash(auditPath) + "\"\n" +
+			"argon2:\n  memory_kib: 1024\n  iterations: 1\n  parallelism: 1\n")
+		// #nosec G306 -- Test configuration file
+		require.NoError(t, os.WriteFile(configPath, yamlData, 0600))
+	}
+}
+
 // executeCommandWithMocks executes the root command with mocked stdin and captured stdout AND stderr.
 // It creates a FRESH command tree for every execution to prevent flag pollution.
 func executeCommandWithMocks(t *testing.T, args []string, stdinInput string) (string, error) {
 	t.Helper()
+
+	if os.Getenv("HAKO_TEST_ISOLATED") == "" {
+		isolateCLIEnv(t, true)
+	}
 
 	// Instantiate a fresh RootCmd for this specific execution.
 	rootCmd := NewRootCmd()

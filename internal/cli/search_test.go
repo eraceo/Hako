@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -76,19 +75,11 @@ func TestSearchCmd(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Clean Environment
-			// Global flags are now handled by NewRootCmd(), so no manual reset needed.
-			viper.Reset()
+			isolateCLIEnv(t, true)
 
 			// Set absolute cross-platform isolated vault path
 			vaultName := "vault_" + strings.ReplaceAll(tt.name, " ", "_") + ".hako"
 			testVaultPath := filepath.Clean(filepath.Join(tempDir, vaultName))
-
-			// Inject isolated Viper configuration with "Fast Crypto" settings
-			// to avoid argon2 iteration panics and ensure tests complete in milliseconds.
-			viper.Set("argon2_iterations", 1)
-			viper.Set("argon2_memory", 1024)
-			viper.Set("argon2_parallelism", 1)
 
 			// Black-box setup: Pre-populate the vault
 			// Uses the extremely fast internal API helper from test_helpers.go

@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -113,19 +112,14 @@ func TestInitCmd(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Clean Environment
-			viper.Reset()
+			isolateCLIEnv(t, true)
 
 			// Ensure absolute isolated paths to avoid cross-test contamination
 			absVaultPath := filepath.Clean(filepath.Join(tempDir, tt.vaultPath))
-			viper.Set("vault_path", absVaultPath)
 
 			absKeyPath := "none"
 			if tt.keyfilePath != "" {
 				absKeyPath = filepath.Clean(filepath.Join(tempDir, tt.keyfilePath))
-				viper.Set("keyfile_path", absKeyPath)
-			} else {
-				viper.Set("keyfile_path", "none")
 			}
 
 			// Setup Filesystem State (simulating existing files)
