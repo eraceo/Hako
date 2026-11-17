@@ -2,7 +2,7 @@
 # Hako - Secure CLI Password Manager
 # ==============================================================================
 
-.PHONY: all build build-linux build-windows build-static deps test-unit test-integration test-coverage benchmark lint security-check check fmt clean install uninstall dev-build run-dev release snapshot help
+.PHONY: all build build-linux build-windows build-static deps test test-unit test-integration test-coverage benchmark lint security-check check fmt clean install uninstall dev-build run-dev release snapshot help
 
 # Variables
 GO ?= go
@@ -62,6 +62,9 @@ deps:
 	$(GO) mod download
 	$(GO) mod tidy
 
+## test: Alias for running unit tests
+test: test-unit
+
 ## test-unit: Run unit tests
 test-unit:
 	@echo "=> Running unit tests..."
@@ -81,7 +84,7 @@ test-coverage:
 ## benchmark: Run memory allocation benchmarks (Check Zero-Allocations)
 benchmark:
 	@echo "=> Running benchmarks..."
-	$(GO) test -bench . -benchmem ./internal/crypto/... ./internal/memory/...
+	$(GO) test -run=^$$ -bench . -benchmem ./internal/crypto/... ./internal/memory/... ./internal/encoding/tlv/...
 
 ## lint: Run golangci-lint
 lint:
