@@ -34,7 +34,9 @@ type addOptions struct {
 	Generate      bool
 	PassLength    int
 	Symbols       bool
+	NoSymbols     bool
 	Memorable     bool
+	NoSimilar     bool
 	PasswordStdin bool
 	Interactive   bool
 }
@@ -59,8 +61,12 @@ Use --password-stdin to pipe a password from standard input.`,
 	cmd.Flags().BoolP("generate", "g", false, "generate a secure password")
 	cmd.Flags().IntP("length", "l", 16, "length of generated password")
 	cmd.Flags().Bool("symbols", true, "include symbols in generated password")
+	cmd.Flags().Bool("no-symbols", false, "exclude symbols in generated password")
 	cmd.Flags().Bool("memorable", false, "generate memorable password")
+	cmd.Flags().Bool("no-similar", false, "exclude similar characters (0, O, l, 1, etc.)")
 	cmd.Flags().Bool("password-stdin", false, "read entry password from stdin without prompt or confirmation")
+
+	cmd.MarkFlagsMutuallyExclusive("symbols", "no-symbols")
 
 	return cmd
 }
@@ -152,12 +158,24 @@ func parseAddFlags(cmd *cobra.Command, args []string) (addOptions, error) {
 	if err != nil {
 		return addOptions{}, err
 	}
+	noSymbols, err := cmd.Flags().GetBool("no-symbols")
+	if err != nil {
+		return addOptions{}, err
+	}
 	memorable, err := cmd.Flags().GetBool("memorable")
+	if err != nil {
+		return addOptions{}, err
+	}
+	noSimilar, err := cmd.Flags().GetBool("no-similar")
 	if err != nil {
 		return addOptions{}, err
 	}
 	passwordStdin, err := cmd.Flags().GetBool("password-stdin")
 	if err != nil {
+		return addOptions{}, err
+	}
+
+	if err := validateOrphanGenerateFlags(cmd, generate); err != nil {
 		return addOptions{}, err
 	}
 
@@ -177,7 +195,9 @@ func parseAddFlags(cmd *cobra.Command, args []string) (addOptions, error) {
 		Generate:      generate,
 		PassLength:    length,
 		Symbols:       symbols,
+		NoSymbols:     noSymbols,
 		Memorable:     memorable,
+		NoSimilar:     noSimilar,
 		PasswordStdin: passwordStdin,
 		Interactive:   !anyFlagChanged && !passwordStdin,
 	}, nil
@@ -198,7 +218,7 @@ func getEntryDetails(cmd *cobra.Command, opts addOptions) (*secrets.Entry, error
 	defer memory.SecureZero(finalUsername)
 
 	// CRITICAL: The password path MUST remain strictly []byte based.
-	entryPassword, err := getEntryPassword(opts)
+	entryPassword, err := getEntryPassword(cmd, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -234,17 +254,11 @@ func getEntryDetails(cmd *cobra.Command, opts addOptions) (*secrets.Entry, error
 		}
 		defer memory.SecureZero(val)
 		if len(val) > 0 {
-			parts := strings.Split(string(val), ",")
-			for _, t := range parts {
-				cleanTag := strings.TrimSpace(t)
-				if cleanTag != "" {
-					finalTags = append(finalTags, cleanTag)
-				}
-			}
+			finalTags = sanitizeTags(strings.Split(string(val), ","))
 		}
 	} else {
 		if cmd.Flags().Changed("tags") {
-			finalTags = opts.Tags
+			finalTags = sanitizeTags(opts.Tags)
 		}
 	}
 
@@ -258,7 +272,7 @@ func getEntryDetails(cmd *cobra.Command, opts addOptions) (*secrets.Entry, error
 	)
 }
 
-func getEntryPassword(opts addOptions) ([]byte, error) {
+func getEntryPassword(cmd *cobra.Command, opts addOptions) ([]byte, error) {
 	if opts.PasswordStdin {
 		line, err := ui.ReadUnbufferedLine()
 		if err != nil {
@@ -271,7 +285,7 @@ func getEntryPassword(opts addOptions) ([]byte, error) {
 	}
 
 	if opts.Generate {
-		return generateEntryPassword(opts)
+		return generateEntryPassword(cmd, opts)
 	}
 
 	// Interactive mode: Ask for password and confirmation
@@ -295,15 +309,17 @@ func getEntryPassword(opts addOptions) ([]byte, error) {
 	return pass1, nil
 }
 
-func generateEntryPassword(opts addOptions) ([]byte, error) {
-	if opts.PassLength < 1 {
-		return nil, fmt.Errorf("%w: must be at least %d", ErrInvalidPasswordLength, 1)
-	}
-
-	genOpts := secrets.GeneratorOptions{
-		Length:     opts.PassLength,
-		UseSymbols: opts.Symbols,
-		Memorable:  opts.Memorable,
+func generateEntryPassword(cmd *cobra.Command, opts addOptions) ([]byte, error) {
+	genOpts, err := prepareGenerateOptions(
+		cmd,
+		opts.PassLength,
+		opts.Symbols,
+		opts.NoSymbols,
+		opts.Memorable,
+		opts.NoSimilar,
+	)
+	if err != nil {
+		return nil, err
 	}
 
 	entryPassword, err := secrets.GeneratePassword(genOpts)

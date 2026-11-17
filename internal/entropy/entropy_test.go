@@ -43,6 +43,10 @@ func TestCalculate(t *testing.T) {
 		// Invalid UTF-8 sequence should default to a raw 256 pool size.
 		// Length=3, Unique=3. EffectiveLength = 3.0. 3.0 * log2(256) = 24.0.
 		{"InvalidUTF8", string([]byte{0xff, 0xfe, 0xfd}), 23.0, 25.0},
+
+		// Mixed valid ASCII + single invalid byte adds +128 instead of overriding poolSize to 256.
+		// "abc\xff": Length=4, Unique=4, pool=26+128=154 -> 4 * log2(154) ≈ 29.06 bits.
+		{"MixedWithInvalidUTF8", "abc" + string([]byte{0xff}), 28.5, 29.5},
 	}
 
 	for _, tt := range tests {
@@ -98,5 +102,23 @@ func TestPasswordStrength_String(t *testing.T) {
 		t.Run(tt.expected, func(t *testing.T) {
 			assert.Equal(t, tt.expected, tt.strength.String())
 		})
+	}
+}
+
+func TestFormatStrengthLabel(t *testing.T) {
+	tests := []struct {
+		entropy  float64
+		expected string
+	}{
+		{0.0, "Weak"},
+		{39.9, "Weak"},
+		{40.0, "Fair"},
+		{60.0, "Good"},
+		{80.0, "Strong"},
+		{128.0, "Very Strong"},
+	}
+
+	for _, tt := range tests {
+		assert.Equal(t, tt.expected, FormatStrengthLabel(tt.entropy))
 	}
 }

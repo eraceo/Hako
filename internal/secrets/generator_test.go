@@ -2,6 +2,7 @@ package secrets
 
 import (
 	"bytes"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -169,6 +170,25 @@ func TestCalculateEntropy(t *testing.T) {
 	password, _ := GeneratePassword(optsActual)
 	actualEntropy := CalculateActualEntropy(password)
 	assert.Greater(t, actualEntropy, 40.0, "Actual generated password should have high entropy")
+
+	// Memorable word count > 10 must clamp to 10 identically to generateMemorablePassword.
+	mem10 := GeneratorOptions{Length: 10, Memorable: true, UseSymbols: true}
+	mem50 := GeneratorOptions{Length: 50, Memorable: true, UseSymbols: true}
+	assert.InDelta(t, mem10.CalculateEntropy(), mem50.CalculateEntropy(), 1e-9)
+
+	// NoSimilar without Symbols excludes only 5 characters (0, O, 1, l, I), leaving pool=57.
+	noSymNoSim := GeneratorOptions{Length: 10, UseSymbols: false, NoSimilar: true}
+	expected := 10.0 * math.Log2(57.0)
+	assert.InDelta(t, expected, noSymNoSim.CalculateEntropy(), 1e-9)
+
+	// Verify wordlist has zero duplicates (e.g. rebuild vs build).
+	words := getWordList()
+	seen := make(map[string]struct{}, len(words))
+	for _, w := range words {
+		assert.NotContains(t, seen, w, "duplicate word in wordlist: %s", w)
+		seen[w] = struct{}{}
+	}
+	assert.Contains(t, seen, "rebuild")
 }
 
 func BenchmarkGeneratePassword(b *testing.B) {

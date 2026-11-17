@@ -132,6 +132,11 @@ func getEditCmdTestCases(testMasterPass string) []editTestCase {
 				require.NoError(t, accessErr)
 			},
 		},
+		{
+			name:          "Fails on orphan generation flag without --generate",
+			args:          []string{"edit", "targetEntry", "--length", "24"},
+			expectedError: "generation flags require --generate",
+		},
 	}
 }
 
