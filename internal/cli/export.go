@@ -269,6 +269,14 @@ func writeJSONEntry(w io.Writer, entry *secrets.Entry, isFirst bool) error {
 
 // encodeAndWipeJSONEntry writes a single entry directly to the stream to prevent intermediate json.MarshalIndent heap allocations.
 func encodeAndWipeJSONEntry(w io.Writer, out exportJSONEntry) error {
+	defer func() {
+		for _, b := range [][]byte{out.Username, out.Password, out.URL, out.Notes} {
+			if len(b) > 2 { // len > 2 prevents wiping shared `""` slices
+				memory.SecureZero(b)
+			}
+		}
+	}()
+
 	nameJSON, err := json.Marshal(out.Name)
 	if err != nil {
 		return err
@@ -340,19 +348,6 @@ func encodeAndWipeJSONEntry(w io.Writer, out exportJSONEntry) error {
 	}
 	if _, err := w.Write([]byte("\"\n    }")); err != nil {
 		return err
-	}
-
-	if len(out.Username) > 2 { // len > 2 prevents wiping the literal `""` bytes
-		memory.SecureZero(out.Username)
-	}
-	if len(out.Password) > 2 {
-		memory.SecureZero(out.Password)
-	}
-	if len(out.URL) > 2 {
-		memory.SecureZero(out.URL)
-	}
-	if len(out.Notes) > 2 {
-		memory.SecureZero(out.Notes)
 	}
 
 	return nil
