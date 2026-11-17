@@ -33,6 +33,7 @@ var (
 	ErrUnexpectedTag = errors.New("unexpected closing tag")
 	// ErrImportFileNotRegular is returned when the import path is not a regular file.
 	ErrImportFileNotRegular = errors.New("import file must be a regular file")
+	errNonLoginItem         = errors.New("non-login bitwarden item skipped")
 )
 
 const (
@@ -216,18 +217,6 @@ func (a *ArenaBuffer) copyBytes(start, end int) []byte {
 
 func isSpace(b byte) bool {
 	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
-}
-
-func (r *SecureReader) skipWhitespace() (byte, error) {
-	for {
-		b, err := r.ReadByte()
-		if err != nil {
-			return 0, err
-		}
-		if !isSpace(b) {
-			return b, nil
-		}
-	}
 }
 
 func (r *SecureReader) skipWhitespaceAndPeek() (byte, error) {
@@ -513,6 +502,9 @@ func (k *SecureKeePassImporter) parseEntryBlock() (*secrets.Entry, error) {
 		memory.SecureZero(notes)
 	}()
 
+	entryDepth := 1
+	historyDepth := 0
+
 	for {
 		tag, isClose, selfClosing, err := k.nextTag()
 		if err != nil {
@@ -521,15 +513,36 @@ func (k *SecureKeePassImporter) parseEntryBlock() (*secrets.Entry, error) {
 
 		tagStr := string(tag)
 
-		if isClose && tagStr == "Entry" {
-			break
-		}
-
 		if selfClosing {
 			continue
 		}
 
-		if tagStr == "String" {
+		if isClose {
+			switch tagStr {
+			case "History":
+				if historyDepth > 0 {
+					historyDepth--
+				}
+			case "Entry":
+				entryDepth--
+				if entryDepth == 0 {
+					goto done
+				}
+			}
+			continue
+		}
+
+		switch tagStr {
+		case "History":
+			historyDepth++
+			continue
+		case "Entry":
+			entryDepth++
+			continue
+		case "String":
+			if historyDepth > 0 || entryDepth != 1 {
+				continue
+			}
 			key, val, err := k.parseStringPair()
 			if err != nil {
 				return nil, err
@@ -537,14 +550,19 @@ func (k *SecureKeePassImporter) parseEntryBlock() (*secrets.Entry, error) {
 
 			switch string(key) {
 			case "Title":
+				memory.SecureZero(name)
 				name = val
 			case "UserName":
+				memory.SecureZero(username)
 				username = val
 			case "Password":
+				memory.SecureZero(password)
 				password = val
 			case "URL":
+				memory.SecureZero(url)
 				url = val
 			case "Notes":
+				memory.SecureZero(notes)
 				notes = val
 			default:
 				// Securely wipe unmapped sensitive attributes (PIN, security questions, custom tokens)
@@ -554,6 +572,7 @@ func (k *SecureKeePassImporter) parseEntryBlock() (*secrets.Entry, error) {
 		}
 	}
 
+done:
 	entryName := "Imported KeePass Entry"
 	if len(name) > 0 {
 		entryName = string(name)
@@ -563,6 +582,14 @@ func (k *SecureKeePassImporter) parseEntryBlock() (*secrets.Entry, error) {
 }
 
 func (k *SecureKeePassImporter) parseStringPair() (key []byte, val []byte, err error) {
+	success := false
+	defer func() {
+		if !success {
+			memory.SecureZero(key)
+			memory.SecureZero(val)
+		}
+	}()
+
 	for {
 		tag, isClose, selfClosing, errTag := k.nextTag()
 		if errTag != nil {
@@ -577,8 +604,10 @@ func (k *SecureKeePassImporter) parseStringPair() (key []byte, val []byte, err e
 		if selfClosing {
 			switch tagStr {
 			case "Key":
+				memory.SecureZero(key)
 				key = []byte{}
 			case "Value":
+				memory.SecureZero(val)
 				val = []byte{}
 			}
 			continue
@@ -586,31 +615,60 @@ func (k *SecureKeePassImporter) parseStringPair() (key []byte, val []byte, err e
 
 		switch tagStr {
 		case "Key":
-			raw, e := k.readElementContent("Key")
+			nextKey, e := k.readAndCopyElement("Key")
 			if e != nil {
 				return nil, nil, e
 			}
-			// Copy out of arena before it might be reused
-			key = make([]byte, len(raw))
-			copy(key, raw)
+			memory.SecureZero(key)
+			key = nextKey
 
 		case "Value":
-			raw, e := k.readElementContent("Value")
+			nextVal, e := k.readAndCopyElement("Value")
 			if e != nil {
 				return nil, nil, e
 			}
-			val = make([]byte, len(raw))
-			copy(val, raw)
+			memory.SecureZero(val)
+			val = nextVal
 		}
 	}
+
+	success = true
 	return key, val, nil
 }
 
+func (k *SecureKeePassImporter) readAndCopyElement(tagName string) ([]byte, error) {
+	raw, err := k.readElementContent(tagName)
+	if err != nil {
+		return nil, err
+	}
+	defer memory.SecureZero(raw)
+
+	dst := make([]byte, len(raw))
+	copy(dst, raw)
+	return dst, nil
+}
+
+func (k *SecureKeePassImporter) appendElementByte(start int, b byte) error {
+	if k.arena.offset-start >= maxFieldBytes {
+		return ErrFieldTooLarge
+	}
+	return k.arena.AllocByte(b)
+}
+
+func (k *SecureKeePassImporter) appendElementBytes(start int, data []byte) error {
+	for _, b := range data {
+		if err := k.appendElementByte(start, b); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+var cdataOpenPrefix = []byte("[CDATA[")
+
 // readElementContent reads bytes between an open tag and its matching close tag.
-// The original implementation had a broken `end` calculation that subtracted
-// len(closeTag) from arena.offset after readTagName had already advanced it,
-// leading to incorrect slice bounds. We now record `start` before any arena writes
-// and `end` before calling readTagName (which writes into the arena).
+// It supports CDATA sections verbatim, decodes XML entities in a single pass,
+// and bounds field storage to maxFieldBytes.
 func (k *SecureKeePassImporter) readElementContent(tagName string) ([]byte, error) {
 	start := k.arena.offset
 
@@ -620,16 +678,18 @@ func (k *SecureKeePassImporter) readElementContent(tagName string) ([]byte, erro
 			return nil, err
 		}
 
-		if b == '<' {
+		switch b {
+		case '<':
 			next, peekErr := k.reader.Peek()
 			if peekErr != nil {
 				return nil, peekErr
 			}
 
-			if next == '/' {
+			switch next {
+			case '/':
 				_, _ = k.reader.ReadByte() // consume '/'
 
-				// Record end of content BEFORE readTagName writes into arena
+				// Record end of content BEFORE readTagNameOnly
 				contentEnd := k.arena.offset
 
 				closeTag, _, err := k.readTagNameOnly()
@@ -638,70 +698,264 @@ func (k *SecureKeePassImporter) readElementContent(tagName string) ([]byte, erro
 				}
 
 				if string(closeTag) == tagName {
-					// Validate bounds
 					if contentEnd < start {
 						return nil, fmt.Errorf("%w: <%s>", ErrBufferInconsistency, tagName)
 					}
-					// Return a heap copy — arena will be reset by caller
 					return k.arena.copyBytes(start, contentEnd), nil
 				}
-				// Wrong closing tag: put the bytes back conceptually by not returning.
-				// This is a malformed document; return an error.
 				return nil, fmt.Errorf("%w: </%s> inside <%s>", ErrUnexpectedTag, closeTag, tagName)
+
+			case '!':
+				_, _ = k.reader.ReadByte() // consume '!'
+				matched := 0
+				for matched < len(cdataOpenPrefix) {
+					p, pErr := k.reader.Peek()
+					if pErr != nil || p != cdataOpenPrefix[matched] {
+						break
+					}
+					_, _ = k.reader.ReadByte()
+					matched++
+				}
+				if matched == len(cdataOpenPrefix) {
+					if err := k.readCDATAContent(start); err != nil {
+						return nil, err
+					}
+				} else {
+					if err := k.appendElementByte(start, '<'); err != nil {
+						return nil, err
+					}
+					if err := k.appendElementByte(start, '!'); err != nil {
+						return nil, err
+					}
+					if err := k.appendElementBytes(start, cdataOpenPrefix[:matched]); err != nil {
+						return nil, err
+					}
+				}
+
+			default:
+				if err := k.appendElementByte(start, b); err != nil {
+					return nil, err
+				}
 			}
-			// '<' that is not a close tag — treat as literal (CDATA-like)
-			_ = k.arena.AllocByte(b)
-		} else {
-			if err := k.arena.AllocByte(b); err != nil {
+
+		case '&':
+			if err := k.readAndDecodeXMLEntity(start); err != nil {
+				return nil, err
+			}
+
+		default:
+			if err := k.appendElementByte(start, b); err != nil {
 				return nil, err
 			}
 		}
 	}
 }
 
+func (k *SecureKeePassImporter) readCDATAContent(start int) error {
+	closeBrackets := 0
+	for {
+		b, err := k.reader.ReadByte()
+		if err != nil {
+			return err
+		}
+		if b == ']' {
+			if closeBrackets < 2 {
+				closeBrackets++
+			} else {
+				if err := k.appendElementByte(start, ']'); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if b == '>' && closeBrackets == 2 {
+			return nil
+		}
+		for closeBrackets > 0 {
+			if err := k.appendElementByte(start, ']'); err != nil {
+				return err
+			}
+			closeBrackets--
+		}
+		if err := k.appendElementByte(start, b); err != nil {
+			return err
+		}
+	}
+}
+
+func (k *SecureKeePassImporter) readAndDecodeXMLEntity(start int) error {
+	var rawBuf [12]byte
+	n := 0
+
+	for n < len(rawBuf) {
+		p, err := k.reader.Peek()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return err
+		}
+		if p == '<' || p == '&' || isSpace(p) {
+			break
+		}
+		b, _ := k.reader.ReadByte()
+		rawBuf[n] = b
+		n++
+		if b == ';' {
+			var utf8Buf [utf8.UTFMax]byte
+			decodedLen, ok, decErr := decodeXMLEntityToken(rawBuf[:n-1], utf8Buf[:])
+			if decErr != nil {
+				return decErr
+			}
+			if ok {
+				return k.appendElementBytes(start, utf8Buf[:decodedLen])
+			}
+			break
+		}
+	}
+
+	if err := k.appendElementByte(start, '&'); err != nil {
+		return err
+	}
+	return k.appendElementBytes(start, rawBuf[:n])
+}
+
+func decodeXMLEntityToken(token []byte, dst []byte) (int, bool, error) {
+	switch string(token) {
+	case "amp":
+		dst[0] = '&'
+		return 1, true, nil
+	case "lt":
+		dst[0] = '<'
+		return 1, true, nil
+	case "gt":
+		dst[0] = '>'
+		return 1, true, nil
+	case "quot":
+		dst[0] = '"'
+		return 1, true, nil
+	case "apos":
+		dst[0] = '\''
+		return 1, true, nil
+	}
+
+	if len(token) >= 2 && token[0] == '#' {
+		var cp uint32
+		if token[1] == 'x' || token[1] == 'X' {
+			if len(token) == 2 {
+				return 0, false, nil
+			}
+			for _, c := range token[2:] {
+				var d uint32
+				switch {
+				case c >= '0' && c <= '9':
+					d = uint32(c - '0')
+				case c >= 'a' && c <= 'f':
+					d = uint32(c-'a') + 10
+				case c >= 'A' && c <= 'F':
+					d = uint32(c-'A') + 10
+				default:
+					return 0, false, nil
+				}
+				cp = (cp << 4) | d
+				if cp > utf8.MaxRune {
+					return 0, false, fmt.Errorf("%w: XML character reference out of range", ErrInvalidFormat)
+				}
+			}
+		} else {
+			for _, c := range token[1:] {
+				if c < '0' || c > '9' {
+					return 0, false, nil
+				}
+				cp = cp*10 + uint32(c-'0')
+				if cp > utf8.MaxRune {
+					return 0, false, fmt.Errorf("%w: XML character reference out of range", ErrInvalidFormat)
+				}
+			}
+		}
+
+		// Reject NUL, UTF-16 surrogates (0xD800..0xDFFF), and out-of-range runes.
+		if cp == 0 || (cp >= 0xD800 && cp <= 0xDFFF) || cp > utf8.MaxRune {
+			return 0, false, fmt.Errorf("%w: invalid XML numeric character reference", ErrInvalidFormat)
+		}
+		n := utf8.EncodeRune(dst, rune(cp))
+		return n, true, nil
+	}
+
+	return 0, false, nil
+}
+
 // readTagNameOnly reads a tag name up to '>' or whitespace (attributes), consuming the '>'.
-// Unlike readTagName, it does NOT write into the arena — it returns a temp heap slice.
-// The old readTagName wrote into the arena which corrupted the content offset tracking.
+// Quotes inside attributes are tracked so '/' inside attribute values (e.g. URLs) does not mark self-closing.
 func (k *SecureKeePassImporter) readTagNameOnly() (name []byte, selfClosing bool, err error) {
 	skipAttrs := false
+	var inQuote byte
+	pendingSlash := false
 
 	for {
 		b, err := k.reader.ReadByte()
 		if err != nil {
 			return nil, false, err
 		}
+		if inQuote != 0 {
+			if b == inQuote {
+				inQuote = 0
+			}
+			continue
+		}
 		if b == '>' {
-			return name, selfClosing, nil
+			return name, pendingSlash, nil
 		}
-		if b == '/' {
-			selfClosing = true
+		if !skipAttrs {
+			if b == '/' {
+				pendingSlash = true
+				continue
+			}
+			if isSpace(b) {
+				skipAttrs = true
+				continue
+			}
+			pendingSlash = false
+			name = append(name, b)
 			continue
 		}
-		if isSpace(b) {
-			skipAttrs = true
-			continue
+
+		if b == '"' || b == '\'' {
+			inQuote = b
+			pendingSlash = false
+		} else if b == '/' {
+			pendingSlash = true
+		} else if !isSpace(b) {
+			pendingSlash = false
 		}
-		if skipAttrs {
-			continue
-		}
-		name = append(name, b)
 	}
 }
 
 func (k *SecureKeePassImporter) skipUntilTag(target string) error {
+	historyDepth := 0
 	for {
-		tag, isClose, _, err := k.nextTag()
+		tag, isClose, selfClosing, err := k.nextTag()
 		if err != nil {
 			return err
 		}
-		if !isClose && string(tag) == target {
+		tagStr := string(tag)
+		if tagStr == "History" {
+			if isClose {
+				if historyDepth > 0 {
+					historyDepth--
+				}
+			} else if !selfClosing {
+				historyDepth++
+			}
+			continue
+		}
+		if historyDepth == 0 && !isClose && !selfClosing && tagStr == target {
 			return nil
 		}
 	}
 }
 
 // nextTag finds the next XML tag and returns its name, whether it's a closing tag, and if it's self-closing.
-// isClose is now correctly set when a '/' is found after '<'.
 func (k *SecureKeePassImporter) nextTag() (name []byte, isClose, isSelfClosing bool, err error) {
 	for {
 		b, err := k.reader.ReadByte()
@@ -722,14 +976,67 @@ func (k *SecureKeePassImporter) nextTag() (name []byte, isClose, isSelfClosing b
 			isClose = true
 			_, _ = k.reader.ReadByte() // consume '/'
 		} else if next == '!' || next == '?' {
-			// Skip comments (<!--) and processing instructions (<?)
-			_ = k.skipUntilByte('>')
+			if skipErr := k.skipXMLBangOrPI(next); skipErr != nil {
+				return nil, false, false, skipErr
+			}
 			continue
 		}
 
 		tag, selfClosing, err := k.readTagNameOnly()
 		return tag, isClose, selfClosing, err
 	}
+}
+
+func (k *SecureKeePassImporter) skipXMLBangOrPI(indicator byte) error {
+	_, _ = k.reader.ReadByte() // consume '!' or '?'
+	if indicator == '?' {
+		prevQuestion := false
+		for {
+			b, err := k.reader.ReadByte()
+			if err != nil {
+				return err
+			}
+			if b == '>' && prevQuestion {
+				return nil
+			}
+			prevQuestion = b == '?'
+		}
+	}
+
+	b1, err := k.reader.ReadByte()
+	if err != nil {
+		return err
+	}
+	if b1 == '>' {
+		return nil
+	}
+	if b1 == '-' {
+		b2, err := k.reader.ReadByte()
+		if err != nil {
+			return err
+		}
+		if b2 == '>' {
+			return nil
+		}
+		if b2 == '-' {
+			dashCount := 0
+			for {
+				b, err := k.reader.ReadByte()
+				if err != nil {
+					return err
+				}
+				switch {
+				case b == '-':
+					dashCount++
+				case b == '>' && dashCount >= 2:
+					return nil
+				default:
+					dashCount = 0
+				}
+			}
+		}
+	}
+	return k.skipUntilByte('>')
 }
 
 func (k *SecureKeePassImporter) skipUntilByte(target byte) error {
@@ -748,8 +1055,9 @@ func (k *SecureKeePassImporter) skipUntilByte(target byte) error {
 
 // SecureJSONImporter parses Bitwarden/generic JSON exports securely into Vault entries.
 type SecureJSONImporter struct {
-	reader *SecureReader
-	arena  *ArenaBuffer
+	reader     *SecureReader
+	arena      *ArenaBuffer
+	openBraces int
 }
 
 // NewSecureJSONImporter initializes a secure JSON parser.
@@ -777,6 +1085,7 @@ func (p *SecureJSONImporter) Close() {
 // Parse reads the JSON stream and returns a list of parsed secrets.Entry.
 func (p *SecureJSONImporter) Parse() ([]*secrets.Entry, error) {
 	var entries []*secrets.Entry
+	skippedNonLogin := 0
 
 	// Scan for the "items" key at any nesting level
 	if err := p.seekToItemsArray(); err != nil {
@@ -787,13 +1096,21 @@ func (p *SecureJSONImporter) Parse() ([]*secrets.Entry, error) {
 		return nil, fmt.Errorf("expected '[' after \"items\": %w", err)
 	}
 
+	warnSkipped := func() {
+		if skippedNonLogin > 0 {
+			ui.PrintfWarningf("Skipped %d non-login Bitwarden item(s) (only Login type items are imported)", skippedNonLogin)
+		}
+	}
+
 	for {
 		if len(entries) >= maxEntries {
+			warnSkipped()
 			return entries, ErrTooManyEntries
 		}
 
 		next, err := p.reader.skipWhitespaceAndPeek()
 		if err != nil {
+			warnSkipped()
 			return entries, err
 		}
 		if next == ']' {
@@ -805,20 +1122,32 @@ func (p *SecureJSONImporter) Parse() ([]*secrets.Entry, error) {
 			continue
 		}
 		if next != '{' {
+			warnSkipped()
 			return entries, fmt.Errorf("%w: expected '{', got '%c'", ErrInvalidFormat, next)
 		}
 
+		p.openBraces = 0
 		entry, err := p.parseEntryObject()
-		if err != nil {
+		switch {
+		case errors.Is(err, errNonLoginItem):
+			skippedNonLogin++
+		case errors.Is(err, io.EOF):
+			warnSkipped()
+			return entries, err
+		case err != nil:
 			ui.PrintfWarningf("Skipping malformed entry: %v", err)
-			_ = p.skipStructure('}')
-		} else if entry != nil {
+			if recErr := p.recoverEntry(); recErr != nil {
+				warnSkipped()
+				return entries, recErr
+			}
+		case entry != nil:
 			entries = append(entries, entry)
 		}
 
 		p.arena.Reset()
 	}
 
+	warnSkipped()
 	return entries, nil
 }
 
@@ -867,19 +1196,65 @@ func (p *SecureJSONImporter) seekToItemsArray() error {
 	}
 }
 
+func (p *SecureJSONImporter) expectOpenBrace() error {
+	if err := p.expect('{'); err != nil {
+		return err
+	}
+	p.openBraces++
+	return nil
+}
+
+func (p *SecureJSONImporter) consumeCloseBrace() error {
+	if err := p.expect('}'); err != nil {
+		return err
+	}
+	if p.openBraces > 0 {
+		p.openBraces--
+	}
+	return nil
+}
+
+func (p *SecureJSONImporter) recoverEntry() error {
+	for p.openBraces > 0 {
+		if err := p.skipStructure('}'); err != nil {
+			p.openBraces = 0
+			return err
+		}
+		p.openBraces--
+	}
+	return nil
+}
+
+func (p *SecureJSONImporter) consumeNull() error {
+	for _, want := range []byte("null") {
+		got, err := p.reader.Peek()
+		if err != nil {
+			return err
+		}
+		if got != want {
+			return fmt.Errorf("%w: expected 'null', got '%c'", ErrInvalidFormat, got)
+		}
+		_, _ = p.reader.ReadByte()
+	}
+	return nil
+}
+
 func (p *SecureJSONImporter) parseEntryObject() (*secrets.Entry, error) {
-	if _, err := p.reader.ReadByte(); err != nil { // consume '{'
+	if err := p.expectOpenBrace(); err != nil {
 		return nil, err
 	}
 
-	var name, username, password, url, notes []byte
+	var name, username, password, url, notes, fieldsNotes []byte
+	itemType := 1
+	hasType := false
 	defer func() {
-		// Wipe unconsumed sensitive fields on parse failure
+		// Wipe unconsumed sensitive fields on exit (secrets.NewEntry copies into memguard).
 		memory.SecureZero(name)
 		memory.SecureZero(username)
 		memory.SecureZero(password)
 		memory.SecureZero(url)
 		memory.SecureZero(notes)
+		memory.SecureZero(fieldsNotes)
 	}()
 
 	for {
@@ -888,7 +1263,9 @@ func (p *SecureJSONImporter) parseEntryObject() (*secrets.Entry, error) {
 			return nil, err
 		}
 		if next == '}' {
-			_, _ = p.reader.ReadByte()
+			if err := p.consumeCloseBrace(); err != nil {
+				return nil, err
+			}
 			break
 		}
 		if next == ',' {
@@ -906,12 +1283,30 @@ func (p *SecureJSONImporter) parseEntryObject() (*secrets.Entry, error) {
 		}
 
 		switch {
+		case hasType && itemType != 1:
+			err = p.skipValue()
+		case bytes.Equal(key, []byte("type")):
+			var t int
+			var ok bool
+			t, ok, err = p.parseIntValue()
+			if err == nil && ok {
+				itemType = t
+				hasType = true
+			}
 		case bytes.Equal(key, []byte("name")):
+			memory.SecureZero(name)
 			name, err = p.parseStringValue()
 		case bytes.Equal(key, []byte("notes")):
+			memory.SecureZero(notes)
 			notes, err = p.parseStringValue()
 		case bytes.Equal(key, []byte("login")):
+			memory.SecureZero(username)
+			memory.SecureZero(password)
+			memory.SecureZero(url)
 			username, password, url, err = p.parseLoginObject()
+		case bytes.Equal(key, []byte("fields")):
+			memory.SecureZero(fieldsNotes)
+			fieldsNotes, err = p.parseFieldsArray()
 		default:
 			err = p.skipValue()
 		}
@@ -922,21 +1317,37 @@ func (p *SecureJSONImporter) parseEntryObject() (*secrets.Entry, error) {
 		}
 	}
 
+	if hasType && itemType != 1 {
+		return nil, errNonLoginItem
+	}
+
 	entryName := "Imported Entry"
 	if len(name) > 0 {
 		entryName = string(name)
 	}
 
-	return secrets.NewEntry(entryName, username, password, url, notes, nil)
+	finalNotes, extraNotesBuf := combineNotesSecure(notes, fieldsNotes)
+	defer memory.SecureZero(extraNotesBuf)
+
+	return secrets.NewEntry(entryName, username, password, url, finalNotes, nil)
 }
 
-func (p *SecureJSONImporter) parseLoginObject() (username, password, url []byte, err error) {
-	if err := p.expect('{'); err != nil {
+func (p *SecureJSONImporter) parseLoginObject() ([]byte, []byte, []byte, error) {
+	next, err := p.reader.skipWhitespaceAndPeek()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if next == 'n' {
+		return nil, nil, nil, p.consumeNull()
+	}
+	if err := p.expectOpenBrace(); err != nil {
 		return nil, nil, nil, err
 	}
 
+	var username, password, url []byte
+	success := false
 	defer func() {
-		if err != nil {
+		if !success {
 			memory.SecureZero(username)
 			memory.SecureZero(password)
 			memory.SecureZero(url)
@@ -944,13 +1355,14 @@ func (p *SecureJSONImporter) parseLoginObject() (username, password, url []byte,
 	}()
 
 	for {
-		next, errPeek := p.reader.skipWhitespaceAndPeek()
-		if errPeek != nil {
-			err = errPeek
+		next, err := p.reader.skipWhitespaceAndPeek()
+		if err != nil {
 			return nil, nil, nil, err
 		}
 		if next == '}' {
-			_, _ = p.reader.ReadByte()
+			if err := p.consumeCloseBrace(); err != nil {
+				return nil, nil, nil, err
+			}
 			break
 		}
 		if next == ',' {
@@ -958,12 +1370,11 @@ func (p *SecureJSONImporter) parseLoginObject() (username, password, url []byte,
 			continue
 		}
 
-		key, errKey := p.parseString()
-		if errKey != nil {
-			err = errKey
+		key, err := p.parseString()
+		if err != nil {
 			return nil, nil, nil, err
 		}
-		if err = p.expect(':'); err != nil {
+		if err := p.expect(':'); err != nil {
 			memory.SecureZero(key)
 			return nil, nil, nil, err
 		}
@@ -971,10 +1382,13 @@ func (p *SecureJSONImporter) parseLoginObject() (username, password, url []byte,
 		var errVal error
 		switch {
 		case bytes.Equal(key, []byte("username")):
+			memory.SecureZero(username)
 			username, errVal = p.parseStringValue()
 		case bytes.Equal(key, []byte("password")):
+			memory.SecureZero(password)
 			password, errVal = p.parseStringValue()
 		case bytes.Equal(key, []byte("uris")):
+			memory.SecureZero(url)
 			url, errVal = p.parseFirstURI()
 		default:
 			errVal = p.skipValue()
@@ -982,19 +1396,26 @@ func (p *SecureJSONImporter) parseLoginObject() (username, password, url []byte,
 		memory.SecureZero(key)
 
 		if errVal != nil {
-			err = errVal
-			return nil, nil, nil, err
+			return nil, nil, nil, errVal
 		}
 	}
+	success = true
 	return username, password, url, nil
 }
 
 func (p *SecureJSONImporter) parseFirstURI() ([]byte, error) {
+	next, err := p.reader.skipWhitespaceAndPeek()
+	if err != nil {
+		return nil, err
+	}
+	if next == 'n' {
+		return nil, p.consumeNull()
+	}
 	if err := p.expect('['); err != nil {
 		return nil, err
 	}
 
-	next, err := p.reader.skipWhitespaceAndPeek()
+	next, err = p.reader.skipWhitespaceAndPeek()
 	if err != nil {
 		return nil, err
 	}
@@ -1003,18 +1424,27 @@ func (p *SecureJSONImporter) parseFirstURI() ([]byte, error) {
 		return nil, nil
 	}
 
-	if err := p.expect('{'); err != nil {
+	if err := p.expectOpenBrace(); err != nil {
 		return nil, err
 	}
 
 	var uri []byte
+	success := false
+	defer func() {
+		if !success {
+			memory.SecureZero(uri)
+		}
+	}()
+
 	for {
 		next, err := p.reader.skipWhitespaceAndPeek()
 		if err != nil {
 			return nil, err
 		}
 		if next == '}' {
-			_, _ = p.reader.ReadByte()
+			if err := p.consumeCloseBrace(); err != nil {
+				return nil, err
+			}
 			break
 		}
 		if next == ',' {
@@ -1032,6 +1462,7 @@ func (p *SecureJSONImporter) parseFirstURI() ([]byte, error) {
 		}
 
 		if bytes.Equal(key, []byte("uri")) {
+			memory.SecureZero(uri)
 			uri, err = p.parseStringValue()
 		} else {
 			err = p.skipValue()
@@ -1047,17 +1478,215 @@ func (p *SecureJSONImporter) parseFirstURI() ([]byte, error) {
 		return nil, err
 	}
 
+	success = true
 	return uri, nil
 }
 
+func (p *SecureJSONImporter) parseIntValue() (int, bool, error) {
+	next, err := p.reader.skipWhitespaceAndPeek()
+	if err != nil {
+		return 0, false, err
+	}
+	if next == 'n' {
+		return 0, false, p.consumeNull()
+	}
+	if next < '0' || next > '9' {
+		return 0, false, fmt.Errorf("%w: expected integer, got '%c'", ErrInvalidFormat, next)
+	}
+	val := 0
+	for {
+		c, err := p.reader.Peek()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return val, true, nil
+			}
+			return 0, false, err
+		}
+		if c == ',' || c == '}' || c == ']' || isSpace(c) {
+			return val, true, nil
+		}
+		if c < '0' || c > '9' {
+			return 0, false, fmt.Errorf("%w: invalid character '%c' in integer", ErrInvalidFormat, c)
+		}
+		_, _ = p.reader.ReadByte()
+		if val > 1000000 {
+			return 0, false, fmt.Errorf("%w: integer value too large", ErrInvalidFormat)
+		}
+		val = val*10 + int(c-'0')
+	}
+}
+
+func (p *SecureJSONImporter) parseFieldsArray() ([]byte, error) {
+	next, err := p.reader.skipWhitespaceAndPeek()
+	if err != nil {
+		return nil, err
+	}
+	if next == 'n' {
+		return nil, p.consumeNull()
+	}
+	if err := p.expect('['); err != nil {
+		return nil, err
+	}
+
+	var out []byte
+	success := false
+	defer func() {
+		if !success {
+			memory.SecureZero(out)
+		}
+	}()
+
+	for {
+		next, err := p.reader.skipWhitespaceAndPeek()
+		if err != nil {
+			return nil, err
+		}
+		if next == ']' {
+			_, _ = p.reader.ReadByte()
+			success = true
+			return out, nil
+		}
+		if next == ',' {
+			_, _ = p.reader.ReadByte()
+			continue
+		}
+
+		fName, fVal, fErr := p.parseFieldObject()
+		if fErr != nil {
+			return nil, fErr
+		}
+		out = appendSecureFieldLine(out, fName, fVal, maxFieldBytes)
+		memory.SecureZero(fName)
+		memory.SecureZero(fVal)
+	}
+}
+
+func (p *SecureJSONImporter) parseFieldObject() ([]byte, []byte, error) {
+	if err := p.expectOpenBrace(); err != nil {
+		return nil, nil, err
+	}
+
+	var fName, fVal []byte
+	success := false
+	defer func() {
+		if !success {
+			memory.SecureZero(fName)
+			memory.SecureZero(fVal)
+		}
+	}()
+
+	for {
+		next, err := p.reader.skipWhitespaceAndPeek()
+		if err != nil {
+			return nil, nil, err
+		}
+		if next == '}' {
+			if err := p.consumeCloseBrace(); err != nil {
+				return nil, nil, err
+			}
+			break
+		}
+		if next == ',' {
+			_, _ = p.reader.ReadByte()
+			continue
+		}
+
+		key, err := p.parseString()
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := p.expect(':'); err != nil {
+			memory.SecureZero(key)
+			return nil, nil, err
+		}
+
+		var errVal error
+		switch {
+		case bytes.Equal(key, []byte("name")):
+			memory.SecureZero(fName)
+			fName, errVal = p.parseStringValue()
+		case bytes.Equal(key, []byte("value")):
+			memory.SecureZero(fVal)
+			fVal, errVal = p.parseStringValue()
+		default:
+			errVal = p.skipValue()
+		}
+		memory.SecureZero(key)
+		if errVal != nil {
+			return nil, nil, errVal
+		}
+	}
+	success = true
+	return fName, fVal, nil
+}
+
+func appendSecureFieldLine(dst, label, val []byte, maxLen int) []byte {
+	if len(val) == 0 {
+		return dst
+	}
+	extra := len(val)
+	if len(label) > 0 {
+		extra += len(label) + 2 // "<label>: <val>"
+	}
+	if len(dst) > 0 {
+		extra++ // '\n' separator
+	}
+	if len(dst)+extra > maxLen {
+		return dst
+	}
+
+	needed := len(dst) + extra
+	if needed > cap(dst) {
+		newCap := needed
+		if cap(dst)*2 > newCap && cap(dst)*2 <= maxLen {
+			newCap = cap(dst) * 2
+		}
+		grown := make([]byte, len(dst), newCap)
+		copy(grown, dst)
+		memory.SecureZero(dst)
+		dst = grown
+	}
+	if len(dst) > 0 {
+		dst = append(dst, '\n')
+	}
+	if len(label) > 0 {
+		dst = append(dst, label...)
+		dst = append(dst, ':', ' ')
+	}
+	return append(dst, val...)
+}
+
+func combineNotesSecure(notes, fieldsNotes []byte) (combined, allocated []byte) {
+	if len(fieldsNotes) == 0 {
+		return notes, nil
+	}
+	if len(notes) == 0 {
+		return fieldsNotes, nil
+	}
+	// Cap total combined notes size to maxFieldBytes
+	availFields := maxFieldBytes - len(notes) - 1
+	if availFields <= 0 {
+		return notes, nil
+	}
+	if len(fieldsNotes) > availFields {
+		fieldsNotes = fieldsNotes[:availFields]
+	}
+	buf := make([]byte, len(notes)+1+len(fieldsNotes))
+	copy(buf, notes)
+	buf[len(notes)] = '\n'
+	copy(buf[len(notes)+1:], fieldsNotes)
+	return buf, buf
+}
+
 func (p *SecureJSONImporter) parseString() ([]byte, error) {
-	b, err := p.reader.skipWhitespace()
+	b, err := p.reader.skipWhitespaceAndPeek()
 	if err != nil {
 		return nil, err
 	}
 	if b != '"' {
 		return nil, fmt.Errorf("%w: expected '\"', got '%c'", ErrInvalidFormat, b)
 	}
+	_, _ = p.reader.ReadByte()
 	return p.readStringContent()
 }
 
@@ -1068,9 +1697,8 @@ func (p *SecureJSONImporter) parseStringValue() ([]byte, error) {
 		return nil, err
 	}
 	if next == 'n' {
-		// consume "null"
-		for range []byte("null") {
-			_, _ = p.reader.ReadByte()
+		if err := p.consumeNull(); err != nil {
+			return nil, err
 		}
 		return nil, nil
 	}
@@ -1195,13 +1823,14 @@ func (p *SecureJSONImporter) readHexRune() (rune, bool) {
 }
 
 func (p *SecureJSONImporter) expect(expected byte) error {
-	b, err := p.reader.skipWhitespace()
+	b, err := p.reader.skipWhitespaceAndPeek()
 	if err != nil {
 		return err
 	}
 	if b != expected {
 		return fmt.Errorf("%w: expected '%c', got '%c'", ErrInvalidFormat, expected, b)
 	}
+	_, _ = p.reader.ReadByte()
 	return nil
 }
 

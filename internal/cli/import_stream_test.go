@@ -560,3 +560,232 @@ func TestSecureCSVImporter_UnmappedColumns(t *testing.T) {
 	assertSecret(t, entries[0].Username, "user1")
 	assertSecret(t, entries[0].Password, "pass1")
 }
+
+func TestSecureKeePassImporter_Hardening(t *testing.T) {
+	tempDir := t.TempDir()
+
+	t.Run("SlashInAttribute_SelfClosingValue_CDATA_Entities_Comments_History", func(t *testing.T) {
+		xmlData := `<?xml version="1.0" encoding="utf-8"?>
+<KeePassFile>
+	<!-- Comment with > and <Entry><String> bogus tags -->
+	<?pi target="x>y"?>
+	<Root>
+		<Group>
+			<Entry>
+				<String>
+					<Key>Title</Key>
+					<Value>Complex &amp; &lt;Secure&gt; &quot;App&quot; &apos;1&apos; &#65; &#x1F512;</Value>
+				</String>
+				<String>
+					<Key>EmptyAttr</Key>
+					<Value url="https://example.com/a/b" ProtectInMemory="True"/>
+				</String>
+				<String>
+					<Key>UserName</Key>
+					<Value>&amp;lt;invalid=&unknown;bare=AT&</Value>
+				</String>
+				<String>
+					<Key>Password</Key>
+					<Value url="https://example.com/login"><![CDATA[raw &amp; <b> <tag/> &x;]]></Value>
+				</String>
+				<String>
+					<Key>URL</Key>
+					<Value>https://example.com/a/b?x=1&amp;y=2</Value>
+				</String>
+				<History>
+					<Entry>
+						<String><Key>Title</Key><Value>Historical Title</Value></String>
+						<String><Key>Password</Key><Value>old_secret</Value></String>
+						<String><Key>Notes</Key><Value>old_note</Value></String>
+					</Entry>
+				</History>
+				<String>
+					<Key>Notes</Key>
+					<Value>Live note after history</Value>
+				</String>
+			</Entry>
+		</Group>
+	</Root>
+</KeePassFile>`
+
+		filePath := filepath.Join(tempDir, "hardening.xml")
+		require.NoError(t, os.WriteFile(filePath, []byte(xmlData), 0600))
+
+		importer, err := NewSecureKeePassImporter(filePath)
+		require.NoError(t, err)
+		defer importer.Close()
+
+		entries, err := importer.Parse()
+		require.NoError(t, err)
+		require.Len(t, entries, 1)
+
+		e := entries[0]
+		assert.Equal(t, `Complex & <Secure> "App" '1' A 🔒`, e.Name)
+		assertSecret(t, e.Username, "&lt;invalid=&unknown;bare=AT&")
+		assertSecret(t, e.Password, "raw &amp; <b> <tag/> &x;")
+		assertSecret(t, e.URL, "https://example.com/a/b?x=1&y=2")
+		assertSecret(t, e.Notes, "Live note after history")
+	})
+
+	t.Run("InvalidNumericEntitySkipped_HistoryAlsoIgnored", func(t *testing.T) {
+		xmlData := `<KeePassFile><Root><Group>
+			<Entry>
+				<String><Key>Title</Key><Value>BadEntity</Value></String>
+				<String><Key>Password</Key><Value>x&#0;y</Value></String>
+				<History>
+					<Entry>
+						<String><Key>Title</Key><Value>HistoryInsideBroken</Value></String>
+						<String><Key>Password</Key><Value>hist_pass</Value></String>
+					</Entry>
+				</History>
+			</Entry>
+			<Entry>
+				<String><Key>Title</Key><Value>SurrogateEntity</Value></String>
+				<String><Key>Password</Key><Value>x&#xD800;y</Value></String>
+			</Entry>
+			<Entry>
+				<String><Key>Title</Key><Value>OutOfRangeEntity</Value></String>
+				<String><Key>Password</Key><Value>x&#x110000;y</Value></String>
+			</Entry>
+			<Entry>
+				<String><Key>Title</Key><Value>GoodAfterInvalid</Value></String>
+				<String><Key>Password</Key><Value>good_pass</Value></String>
+			</Entry>
+		</Group></Root></KeePassFile>`
+
+		filePath := filepath.Join(tempDir, "invalid_entity.xml")
+		require.NoError(t, os.WriteFile(filePath, []byte(xmlData), 0600))
+
+		importer, err := NewSecureKeePassImporter(filePath)
+		require.NoError(t, err)
+		defer importer.Close()
+
+		entries, err := importer.Parse()
+		require.NoError(t, err)
+		require.Len(t, entries, 1)
+		assert.Equal(t, "GoodAfterInvalid", entries[0].Name)
+		assertSecret(t, entries[0].Password, "good_pass")
+	})
+
+	t.Run("OversizedFieldIsSkippedWithoutBreakingValidEntries", func(t *testing.T) {
+		oversized := strings.Repeat("A", maxFieldBytes+64)
+		xmlData := `<KeePassFile><Root><Group>
+			<Entry>
+				<String><Key>Title</Key><Value>TooBig</Value></String>
+				<String><Key>Password</Key><Value>` + oversized + `</Value></String>
+			</Entry>
+			<Entry>
+				<String><Key>Title</Key><Value>ValidAfter</Value></String>
+				<String><Key>Password</Key><Value>valid_pass</Value></String>
+			</Entry>
+		</Group></Root></KeePassFile>`
+
+		filePath := filepath.Join(tempDir, "oversized.xml")
+		require.NoError(t, os.WriteFile(filePath, []byte(xmlData), 0600))
+
+		importer, err := NewSecureKeePassImporter(filePath)
+		require.NoError(t, err)
+		defer importer.Close()
+
+		entries, err := importer.Parse()
+		require.NoError(t, err)
+		require.Len(t, entries, 1)
+		assert.Equal(t, "ValidAfter", entries[0].Name)
+		assertSecret(t, entries[0].Password, "valid_pass")
+	})
+}
+
+func TestSecureJSONImporter_Hardening(t *testing.T) {
+	tempDir := t.TempDir()
+
+	t.Run("NullFields_NestedRecovery_NonLoginSkipped_CustomFieldsAppended", func(t *testing.T) {
+		jsonData := `{
+			"items": [
+				{
+					"type": 2,
+					"name": "Secure Note First",
+					"notes": "note body"
+				},
+				{
+					"name": "Card Last",
+					"notes": "card details",
+					"type": 3
+				},
+				{
+					"type": 4,
+					"name": "Identity"
+				},
+				{
+					"name": "Nullable Login",
+					"notes": null,
+					"fields": null,
+					"login": null
+				},
+				{
+					"name": "Nullable URIs",
+					"login": {
+						"username": "u_null_uri",
+						"password": "p_null_uri",
+						"uris": null
+					}
+				},
+				{
+					"name": "Broken Nested URI",
+					"login": {
+						"uris": [
+							{ "uri": 123 }
+						],
+						"username": "u_broken",
+						"password": "p_broken"
+					}
+				},
+				{
+					"name": "Broken Null Literal",
+					"notes": n00b,
+					"login": { "username": "x", "password": "y" }
+				},
+				{
+					"type": 1,
+					"name": "Bitwarden Login With Fields",
+					"notes": "Main note",
+					"fields": [
+						{ "name": "PIN", "value": "1234", "type": 0 },
+						{ "name": "LinkedEmpty", "value": null, "type": 3 },
+						{ "name": "", "value": "bare_secret", "type": 1 }
+					],
+					"login": {
+						"username": "bw_user",
+						"password": "bw_password",
+						"uris": [
+							{ "uri": "https://bw.example.com" }
+						]
+					}
+				}
+			]
+		}`
+
+		filePath := filepath.Join(tempDir, "bitwarden_hardening.json")
+		require.NoError(t, os.WriteFile(filePath, []byte(jsonData), 0600))
+
+		importer, err := NewSecureJSONImporter(filePath)
+		require.NoError(t, err)
+		defer importer.Close()
+
+		entries, err := importer.Parse()
+		require.NoError(t, err)
+		// "Nullable Login" has login: null so empty password fails secrets.NewEntry (parsed cleanly, skipped by validation)
+		require.Len(t, entries, 2)
+
+		assert.Equal(t, "Nullable URIs", entries[0].Name)
+		assertSecret(t, entries[0].Username, "u_null_uri")
+		assertSecret(t, entries[0].Password, "p_null_uri")
+		assertSecret(t, entries[0].URL, "")
+		assertSecret(t, entries[0].Notes, "")
+
+		assert.Equal(t, "Bitwarden Login With Fields", entries[1].Name)
+		assertSecret(t, entries[1].Username, "bw_user")
+		assertSecret(t, entries[1].Password, "bw_password")
+		assertSecret(t, entries[1].URL, "https://bw.example.com")
+		assertSecret(t, entries[1].Notes, "Main note\nPIN: 1234\nbare_secret")
+	})
+}
