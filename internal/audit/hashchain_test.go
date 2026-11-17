@@ -143,3 +143,79 @@ func TestVerifyLogChain_RotationWithCompression(t *testing.T) {
 	assert.True(t, report.TotalFilesChecked > 1, "Should have checked multiple log archive files")
 	assert.True(t, report.TotalEventsChecked > 0)
 }
+
+func TestVerifyLogChain_AnchorAndHeadTruncation(t *testing.T) {
+	t.Run("Detects head truncation on single active file without anchor", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		logPath := filepath.Join(tmpDir, "audit.log")
+
+		logger := NewLogger(logPath, true)
+		logger.LogSuccess(EventVaultInit, "Event 1", nil)
+		logger.LogSuccess(EventEntryAdd, "Event 2", nil)
+
+		content, err := os.ReadFile(logPath) // #nosec G304
+		require.NoError(t, err)
+		lines := strings.Split(strings.TrimSpace(string(content)), "\n")
+		require.Len(t, lines, 2)
+
+		// Attacker truncates the first line
+		require.NoError(t, os.WriteFile(logPath, []byte(lines[1]+"\n"), 0600))
+
+		report, err := VerifyLogChain(logPath)
+		require.NoError(t, err)
+		assert.Equal(t, StatusTampered, report.Status)
+	})
+
+	t.Run("Preserves continuity with maxBackups=0 via anchor and catches head truncation", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		logPath := filepath.Join(tmpDir, "audit.log")
+
+		logger := NewLoggerWithOptions(logPath, true, 50, 0, false, true)
+		for i := 0; i < 4; i++ {
+			logger.LogSuccess(EventEntryAdd, "Rotated single file event", map[string]interface{}{"i": i})
+		}
+
+		assert.FileExists(t, logPath+".anchor")
+		report, err := VerifyLogChain(logPath)
+		require.NoError(t, err)
+		assert.Equal(t, StatusValid, report.Status)
+
+		// Corrupt anchor file -> StatusTampered
+		require.NoError(t, os.WriteFile(logPath+".anchor", []byte("badhash\n"), 0600))
+		report, err = VerifyLogChain(logPath)
+		require.NoError(t, err)
+		assert.Equal(t, StatusTampered, report.Status)
+	})
+
+	t.Run("Detects deleted head event after rotation eviction using anchor", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		logPath := filepath.Join(tmpDir, "audit.log")
+
+		// maxBackups=1, no compression for easy line removal test
+		logger := NewLoggerWithOptions(logPath, true, 50, 1, false, true)
+		for i := 0; i < 4; i++ {
+			logger.LogSuccess(EventEntryAdd, "Eviction anchor test", map[string]interface{}{"i": i})
+		}
+
+		assert.FileExists(t, logPath+".anchor")
+		report, err := VerifyLogChain(logPath)
+		require.NoError(t, err)
+		assert.Equal(t, StatusValid, report.Status)
+
+		// Delete archive .1 while leaving .anchor and active log -> active log PrevHash != anchor
+		require.NoError(t, os.Remove(logPath+".1"))
+		report, err = VerifyLogChain(logPath)
+		require.NoError(t, err)
+		assert.Equal(t, StatusTampered, report.Status)
+	})
+
+	t.Run("Scanner error on >10MB unparseable line is not misclassified as StatusTruncatedEOF", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		logPath := filepath.Join(tmpDir, "huge_line.log")
+		hugeLine := "{" + strings.Repeat("a", 11*1024*1024)
+		require.NoError(t, os.WriteFile(logPath, []byte(hugeLine), 0600))
+
+		_, err := VerifyLogChain(logPath)
+		require.Error(t, err)
+	})
+}

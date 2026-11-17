@@ -371,3 +371,68 @@ func TestLogger_Rotation(t *testing.T) {
 	assert.FileExists(t, logPath)
 	assert.FileExists(t, logPath+".1.gz")
 }
+
+func TestReadLastHash_TailSeekEdgeCases(t *testing.T) {
+	t.Run("Large uncompressed file (>16KiB) reads last hash accurately", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		logPath := filepath.Join(tmpDir, "large_tail.log")
+		logger := NewLoggerWithOptions(logPath, true, 50*1024*1024, 3, false, true)
+
+		// Write > 16 KiB of events
+		for i := 0; i < 120; i++ {
+			logger.LogSuccess(EventEntryGet, "Reading secret entry to exceed 16KiB window", map[string]interface{}{
+				"idx":     i,
+				"padding": strings.Repeat("x", 128),
+			})
+		}
+		info, err := os.Stat(logPath)
+		require.NoError(t, err)
+		require.Greater(t, info.Size(), int64(16*1024))
+
+		assert.Equal(t, logger.lastHash, readLastHash(logPath))
+	})
+
+	t.Run("Single event larger than 16KiB triggers full-scan fallback", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		logPath := filepath.Join(tmpDir, "oversized_event.log")
+		ev := Event{
+			Timestamp: time.Now().UTC(),
+			EventType: EventEntryAdd,
+			Success:   true,
+			Message:   strings.Repeat("M", 20*1024),
+			ProcessID: 1,
+			SessionID: "sess_big",
+			PrevHash:  GenesisHash,
+		}
+		ev.Hash = ComputeEventHash(GenesisHash, &ev)
+		raw, err := json.Marshal(ev)
+		require.NoError(t, err)
+		require.Greater(t, len(raw), 16*1024)
+		require.NoError(t, os.WriteFile(logPath, append(raw, '\n'), 0600))
+
+		assert.Equal(t, ev.Hash, readLastHash(logPath))
+	})
+
+	t.Run("Empty active file falls back to rotated archive", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		logPath := filepath.Join(tmpDir, "empty_active.log")
+		archivePath := logPath + ".1"
+
+		ev := Event{
+			Timestamp: time.Now().UTC(),
+			EventType: EventVaultInit,
+			Success:   true,
+			Message:   "archived event",
+			ProcessID: 1,
+			SessionID: "sess_arch",
+			PrevHash:  GenesisHash,
+		}
+		ev.Hash = ComputeEventHash(GenesisHash, &ev)
+		raw, err := json.Marshal(ev)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(archivePath, append(raw, '\n'), 0600))
+		require.NoError(t, os.WriteFile(logPath, []byte{}, 0600))
+
+		assert.Equal(t, ev.Hash, readLastHash(logPath))
+	})
+}

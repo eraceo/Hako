@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,9 @@ import (
 	"strconv"
 	"strings"
 )
+
+// ErrInvalidAuditAnchor indicates an audit rotation anchor file is malformed or corrupted.
+var ErrInvalidAuditAnchor = errors.New("invalid audit log anchor")
 
 // GenesisHash is the fixed zero-hash used as prev_hash for the very first event in a vault log history.
 const GenesisHash = "0000000000000000000000000000000000000000000000000000000000000000"
@@ -42,6 +46,9 @@ type VerifyReport struct {
 }
 
 // ComputeEventHash computes a deterministic, canonical SHA-256 hash for an Event.
+// V1 compatibility contract: Event.Details is hashed via standard encoding/json.Marshal
+// (sorted map keys) and fields not included in v1 (e.g., UserAgent) are intentionally omitted
+// so existing audit logs remain verifiable without migration.
 func ComputeEventHash(prevHash string, event *Event) string {
 	if prevHash == "" {
 		prevHash = GenesisHash
@@ -129,8 +136,12 @@ func VerifyLogChain(logPath string) (*VerifyReport, error) {
 
 				var event Event
 				if err := json.Unmarshal([]byte(lineText), &event); err != nil {
-					// Check if this is a truncated line at the very EOF of the current log file
+					// Check if this is a truncated line at the very EOF of the current log file.
+					// Inspect scanner.Err() first so I/O or buffer errors are never misclassified as StatusTruncatedEOF.
 					if isLastFile && !scanner.Scan() {
+						if scanErr := scanner.Err(); scanErr != nil {
+							return fmt.Errorf("error reading log file %s: %w", filePath, scanErr)
+						}
 						report.Status = StatusTruncatedEOF
 						report.FirstErrorLine = fileLineNum
 						report.FirstErrorFile = filepath.Base(filePath)
@@ -145,9 +156,30 @@ func VerifyLogChain(logPath string) (*VerifyReport, error) {
 					return nil
 				}
 
-				// For the very first event of the oldest available log file, adopt its PrevHash
+				// For the very first event encountered in verification:
+				// - If an .anchor file exists, enforce exact continuity across evicted rotations.
+				// - If no .anchor exists and only the active file is present, require GenesisHash (detects head truncation).
+				// - If no .anchor exists and rotated archives exist, adopt event.PrevHash for v1 backward compatibility.
 				if lineIndex == 1 {
-					expectedPrevHash = event.PrevHash
+					anchorHash, anchorErr := readAnchorHash(logPath)
+					switch {
+					case anchorErr == nil:
+						expectedPrevHash = anchorHash
+					case os.IsNotExist(anchorErr):
+						if len(files) == 1 {
+							expectedPrevHash = GenesisHash
+						} else {
+							expectedPrevHash = event.PrevHash
+						}
+					case errors.Is(anchorErr, ErrInvalidAuditAnchor):
+						report.Status = StatusTampered
+						report.FirstErrorLine = fileLineNum
+						report.FirstErrorFile = filepath.Base(logPath + anchorFileSuffix)
+						report.ErrorDetails = "Corrupted or invalid audit log anchor hash"
+						return nil
+					default:
+						return fmt.Errorf("failed to read audit log anchor: %w", anchorErr)
+					}
 				}
 
 				// Check 1: PrevHash match
