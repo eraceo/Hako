@@ -16,6 +16,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	hakoBinary "github.com/eraceo/Hako/internal/encoding/tlv"
 	"github.com/eraceo/Hako/internal/memory"
@@ -236,11 +238,17 @@ func (v *Vault) MarshalBinary(e *hakoBinary.Encoder) error {
 		return fmt.Errorf("write meta version: %w", err)
 	}
 
-	if len(v.Entries) > math.MaxUint32 {
+	validCount := 0
+	for _, entry := range v.Entries {
+		if entry != nil {
+			validCount++
+		}
+	}
+	if validCount > math.MaxUint32 {
 		return ErrTooManyEntries
 	}
 	// #nosec G115 -- Checked bounds above
-	if err := e.WriteLength(uint32(len(v.Entries))); err != nil {
+	if err := e.WriteLength(uint32(validCount)); err != nil {
 		return fmt.Errorf("write entry count: %w", err)
 	}
 
@@ -721,31 +729,52 @@ func hasAnyTag(entryTags, filterTags []string) bool {
 	return false
 }
 
-// containsBytes performs a zero-allocation ASCII case-insensitive search.
+// containsBytes performs a zero-allocation UTF-8 and ASCII case-insensitive search.
 func containsBytes(data []byte, patLower string) bool {
-	patLen := len(patLower)
-	dataLen := len(data)
-
-	if patLen == 0 || patLen > dataLen {
+	if patLower == "" || len(data) == 0 {
 		return false
 	}
 
-	for i := 0; i <= dataLen-patLen; i++ {
-		match := true
-		for j := 0; j < patLen; j++ {
-			b := data[i+j]
-			if b >= 'A' && b <= 'Z' {
-				b += 32 // ToLower for ASCII
-			}
-			// Safe byte comparison against lower-cased pattern string
-			if b != patLower[j] {
-				match = false
-				break
-			}
-		}
-		if match {
+	for i := 0; i < len(data); {
+		if matchCaseInsensitivePrefix(data[i:], patLower) {
 			return true
+		}
+		if data[i] < utf8.RuneSelf {
+			i++
+		} else {
+			_, size := utf8.DecodeRune(data[i:])
+			i += size
 		}
 	}
 	return false
+}
+
+func matchCaseInsensitivePrefix(sub []byte, patLower string) bool {
+	si, pi := 0, 0
+	for pi < len(patLower) {
+		if si >= len(sub) {
+			return false
+		}
+		if sub[si] < utf8.RuneSelf && patLower[pi] < utf8.RuneSelf {
+			b := sub[si]
+			if b >= 'A' && b <= 'Z' {
+				b += 32
+			}
+			if b != patLower[pi] {
+				return false
+			}
+			si++
+			pi++
+			continue
+		}
+
+		dr, dsize := utf8.DecodeRune(sub[si:])
+		pr, psize := utf8.DecodeRuneInString(patLower[pi:])
+		if unicode.ToLower(dr) != unicode.ToLower(pr) {
+			return false
+		}
+		si += dsize
+		pi += psize
+	}
+	return true
 }
