@@ -48,11 +48,6 @@ func runRemove(cmd *cobra.Command, args []string) error {
 	// Load vault
 	vault, vaultFile, masterPassword, err := loadVault(cmd.Context(), cfg)
 	if err != nil {
-		// Log failure to access vault for deletion
-		audit.LogFailure(audit.EventEntryDelete, "Failed to load vault for deletion", map[string]interface{}{
-			"target": nameOrID,
-			"error":  err.Error(),
-		})
 		return err
 	}
 	defer func() {

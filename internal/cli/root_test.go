@@ -3,10 +3,13 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/eraceo/Hako/internal/audit"
 )
 
 func TestRootCmd_InitConfig(t *testing.T) {
@@ -85,4 +88,43 @@ func TestRootCmd_InitConfig(t *testing.T) {
 			assert.Equal(t, tt.expectedLogLevel, cfg.LogLevel)
 		})
 	}
+}
+
+func TestRootCmd_NoSpuriousAuditOnUtilityCommands(t *testing.T) {
+	t.Run("version and completion do not initialize or write audit log", func(t *testing.T) {
+		isolateCLIEnv(t, false)
+		auditPath := filepath.Join(t.TempDir(), "no_write_audit.log")
+		t.Setenv("HAKO_AUDIT_LOG_PATH", auditPath)
+
+		_, err := executeCommandWithMocks(t, []string{"version"}, "")
+		require.NoError(t, err)
+		assert.NoFileExists(t, auditPath)
+
+		_, err = executeCommandWithMocks(t, []string{"completion", "bash"}, "")
+		require.NoError(t, err)
+		assert.NoFileExists(t, auditPath)
+	})
+
+	t.Run("audit verify-logs verifies existing chain without appending vault_load", func(t *testing.T) {
+		isolateCLIEnv(t, false)
+		auditDir := filepath.Join(t.TempDir(), "logs")
+		require.NoError(t, os.MkdirAll(auditDir, 0700))
+		auditPath := filepath.Join(auditDir, "audit.log")
+		t.Setenv("HAKO_AUDIT_LOG_PATH", auditPath)
+
+		logger := audit.NewLogger(auditPath, true)
+		logger.LogEvent(audit.EventVaultInit, true, "seed event", nil)
+
+		beforeBytes, err := os.ReadFile(auditPath) // #nosec G304
+		require.NoError(t, err)
+
+		output, err := executeCommandWithMocks(t, []string{"audit", "verify-logs"}, "")
+		require.NoError(t, err)
+		assert.Contains(t, output, "VERIFIED. Checked 1 events")
+
+		afterBytes, err := os.ReadFile(auditPath) // #nosec G304
+		require.NoError(t, err)
+		assert.Equal(t, string(beforeBytes), string(afterBytes))
+		assert.NotContains(t, strings.ToLower(string(afterBytes)), "vault_load")
+	})
 }

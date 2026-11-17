@@ -49,9 +49,6 @@ func runList(cmd *cobra.Command, _ []string) error {
 	// Load vault
 	vault, _, masterPassword, err := loadVault(cmd.Context(), cfg)
 	if err != nil {
-		audit.LogFailure(audit.EventEntryList, "Failed to load vault for listing", map[string]interface{}{
-			"error": err.Error(),
-		})
 		return err
 	}
 	// Security: Destroy master password immediately as the list operation is read-only
